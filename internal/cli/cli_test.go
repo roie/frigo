@@ -86,7 +86,9 @@ func TestRepositoryCommandOutsideGitFailsClearly(t *testing.T) {
 }
 
 func TestReservedCommandNameCanBeOwned(t *testing.T) {
-	root := initRepo(t)
+	root := testrepo.Init(t)
+	testrepo.Write(t, root, "README.md", "main\n")
+	testrepo.CommitAll(t, root, "initial", "README.md")
 	testrepo.Write(t, root, "log", "local log\n")
 
 	got := invoke(t, root, "add", "log")
@@ -101,7 +103,9 @@ func TestReservedCommandNameCanBeOwned(t *testing.T) {
 }
 
 func TestPathTakingCommandsAcceptDoubleDash(t *testing.T) {
-	root := initRepo(t)
+	root := testrepo.Init(t)
+	testrepo.Write(t, root, "README.md", "main\n")
+	testrepo.CommitAll(t, root, "initial", "README.md")
 	testrepo.Write(t, root, "-draft.md", "draft\n")
 
 	got := invoke(t, root, "add", "--", "-draft.md")
@@ -115,7 +119,10 @@ func TestPathTakingCommandsAcceptDoubleDash(t *testing.T) {
 }
 
 func TestPathlessCommitSuggestsAll(t *testing.T) {
-	got := invoke(t, initRepo(t), "commit", "-m", "checkpoint")
+	root := testrepo.Init(t)
+	testrepo.Write(t, root, "README.md", "main\n")
+	testrepo.CommitAll(t, root, "initial", "README.md")
+	got := invoke(t, root, "commit", "-m", "checkpoint")
 	if got.code != 2 || !strings.Contains(got.stderr, "use -a") {
 		t.Fatalf("result=%+v", got)
 	}
@@ -130,7 +137,9 @@ func TestCombinedAndSeparateAllFlags(t *testing.T) {
 		{"commit", "-am", "checkpoint"},
 		{"commit", "-a", "-m", "checkpoint"},
 	} {
-		root := initRepo(t)
+		root := testrepo.Init(t)
+		testrepo.Write(t, root, "README.md", "main\n")
+		testrepo.CommitAll(t, root, "initial", "README.md")
 		testrepo.Write(t, root, "PLAN.md", "plan\n")
 		if got := invoke(t, root, "add", "PLAN.md"); got.code != 0 {
 			t.Fatal(got.stderr)
@@ -146,7 +155,9 @@ func TestCombinedAndSeparateAllFlags(t *testing.T) {
 }
 
 func TestStatusDiffCommitLogRestoreReleaseAndLs(t *testing.T) {
-	root := initRepo(t)
+	root := testrepo.Init(t)
+	testrepo.Write(t, root, "README.md", "main\n")
+	testrepo.CommitAll(t, root, "initial", "README.md")
 	testrepo.Write(t, root, "PLAN.md", "plan v1\n")
 	testrepo.Write(t, root, "NOTES.md", "notes v1\n")
 	if got := invoke(t, root, "add", "PLAN.md", "NOTES.md"); got.code != 0 {
@@ -231,14 +242,6 @@ func invoke(t *testing.T, root string, args ...string) result {
 		stderr: stderr.String(),
 		code:   code,
 	}
-}
-
-func initRepo(t *testing.T) string {
-	t.Helper()
-	root := testrepo.Init(t)
-	testrepo.Write(t, root, "README.md", "main\n")
-	testrepo.CommitAll(t, root, "initial", "README.md")
-	return root
 }
 
 func privateTree(t *testing.T, root string) string {

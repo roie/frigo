@@ -24,7 +24,8 @@ func TestLiteralPatternEscapesGitMetacharacters(t *testing.T) {
 }
 
 func TestSyncPreservesContentOutsideManagedSection(t *testing.T) {
-	repo := testRepository(t)
+	root := testrepo.Init(t)
+	repo := discoverRepository(t, root)
 	original := "keep one\n# >>> frigo >>>\n/old\n# <<< frigo <<<\nkeep two\n"
 	if err := os.WriteFile(repo.ExcludePath, []byte(original), 0o644); err != nil {
 		t.Fatal(err)
@@ -79,12 +80,6 @@ func TestSyncUnionsMainAndLinkedWorktreeRegistries(t *testing.T) {
 	if strings.Contains(string(contents), "/stale.txt") {
 		t.Fatalf("exclude resurrected stale current-worktree registry path: %q", contents)
 	}
-}
-
-func testRepository(t *testing.T) repository.Repository {
-	t.Helper()
-	root := testrepo.Init(t)
-	return discoverRepository(t, root)
 }
 
 func discoverRepository(t *testing.T, root string) repository.Repository {

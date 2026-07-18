@@ -29,7 +29,9 @@ func TestDiscoverUsesFrigoHistoryNames(t *testing.T) {
 func TestDiscoverNormalRepository(t *testing.T) {
 	t.Parallel()
 
-	root := initRepository(t)
+	root := testrepo.Init(t)
+	testrepo.Write(t, root, "README.md", "test\n")
+	testrepo.CommitAll(t, root, "initial", "README.md")
 	nested := filepath.Join(root, "a", "b")
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
@@ -72,7 +74,9 @@ func TestDiscoverLinkedWorktreeUsesWorktreeLocalState(t *testing.T) {
 		t.Skip("git is required")
 	}
 
-	root := initRepository(t)
+	root := testrepo.Init(t)
+	testrepo.Write(t, root, "README.md", "test\n")
+	testrepo.CommitAll(t, root, "initial", "README.md")
 	worktree := filepath.Join(root, "linked")
 	testrepo.Run(t, root, "worktree", "add", "-q", "-b", "linked-branch", worktree)
 
@@ -105,16 +109,4 @@ func TestDiscoverRejectsNonRepository(t *testing.T) {
 	if err == nil {
 		t.Fatal("Discover() error = nil, want error")
 	}
-}
-
-func initRepository(t *testing.T) string {
-	t.Helper()
-	root := t.TempDir()
-	testrepo.Run(t, root, "init", "-q")
-	testrepo.Run(t, root, "config", "user.name", "Test User")
-	testrepo.Run(t, root, "config", "user.email", "test@example.com")
-	testrepo.Write(t, root, "README.md", "test\n")
-	testrepo.Run(t, root, "add", "README.md")
-	testrepo.Run(t, root, "commit", "-qm", "initial")
-	return root
 }

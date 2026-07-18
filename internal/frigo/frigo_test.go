@@ -53,11 +53,8 @@ func TestAddInitializesWithoutCommitting(t *testing.T) {
 	if !slices.Equal(owned.Paths, []string{"PLAN.md"}) {
 		t.Fatalf("registry paths = %v, want [PLAN.md]", owned.Paths)
 	}
-	contents, err := os.ReadFile(ws.repo.ExcludePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(contents), "/PLAN.md") {
+	contents := testrepo.Read(t, root, ".git/info/exclude")
+	if !strings.Contains(contents, "/PLAN.md") {
 		t.Fatalf("exclude file = %q, want /PLAN.md", contents)
 	}
 	hasHead, err := ws.hasHead(context.Background())
@@ -76,9 +73,7 @@ func TestAddRollsBackNewMetadataOnInitialSaveFailure(t *testing.T) {
 	ws, root := newBareWorkspace(t)
 	testrepo.Write(t, root, "PLAN.md", "draft\n")
 	originalExclude := "keep me\n"
-	if err := os.WriteFile(ws.repo.ExcludePath, []byte(originalExclude), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testrepo.Write(t, root, ".git/info/exclude", originalExclude)
 
 	oldSave := saveRegistry
 	saveRegistry = func(filename string, owned registry.Registry) error {
@@ -105,11 +100,8 @@ func TestAddRollsBackNewMetadataOnInitialSaveFailure(t *testing.T) {
 	if _, statErr := os.Stat(ws.repo.FrigoDir); !os.IsNotExist(statErr) {
 		t.Fatalf("frigo metadata remains after rollback: %v", statErr)
 	}
-	contents, err := os.ReadFile(ws.repo.ExcludePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := string(contents); got != originalExclude {
+	contents := testrepo.Read(t, root, ".git/info/exclude")
+	if got := contents; got != originalExclude {
 		t.Fatalf("exclude file = %q, want %q", got, originalExclude)
 	}
 }
@@ -211,11 +203,8 @@ func TestAddRollsBackNewMetadataOnConfigFailure(t *testing.T) {
 	if _, statErr := os.Stat(ws.repo.FrigoDir); !os.IsNotExist(statErr) {
 		t.Fatalf("frigo metadata remains after rollback: %v", statErr)
 	}
-	contents, readErr := os.ReadFile(ws.repo.ExcludePath)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if strings.Contains(string(contents), "/PLAN.md") {
+	contents := testrepo.Read(t, root, ".git/info/exclude")
+	if strings.Contains(contents, "/PLAN.md") {
 		t.Fatalf("exclude file still contains PLAN.md after rollback: %q", contents)
 	}
 }
@@ -244,16 +233,12 @@ func TestAddRollsBackRegistryAndIgnoreOnVisibilityCheckFailure(t *testing.T) {
 	if !slices.Equal(owned.Paths, []string{"docs/local"}) {
 		t.Fatalf("registry paths after rollback = %v, want [docs/local]", owned.Paths)
 	}
-	contents, err := os.ReadFile(ws.repo.ExcludePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(contents)
+	text := testrepo.Read(t, root, ".git/info/exclude")
 	if !strings.Contains(text, "/docs/local") {
-		t.Fatalf("exclude file lost original path after rollback: %q", contents)
+		t.Fatalf("exclude file lost original path after rollback: %q", text)
 	}
 	if strings.Contains(text, "/PLAN.md") {
-		t.Fatalf("exclude file kept new path after rollback: %q", contents)
+		t.Fatalf("exclude file kept new path after rollback: %q", text)
 	}
 	if _, statErr := os.Stat(ws.repo.HistoryDir); statErr != nil {
 		t.Fatalf("existing history missing after rollback: %v", statErr)
@@ -711,11 +696,8 @@ func TestReleaseForceRemovesExactOwnershipAndPreservesPhysicalFiles(t *testing.T
 	if got := testrepo.Read(t, root, "PLAN.md"); got != "changed\n" {
 		t.Fatalf("PLAN.md = %q, want changed content preserved", got)
 	}
-	contents, err := os.ReadFile(ws.repo.ExcludePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(contents), "/PLAN.md") {
+	contents := testrepo.Read(t, root, ".git/info/exclude")
+	if strings.Contains(contents, "/PLAN.md") {
 		t.Fatalf("exclude file still contains PLAN.md after release: %q", contents)
 	}
 
@@ -789,11 +771,9 @@ func TestReleaseFinalRootRetainsHistory(t *testing.T) {
 }
 
 func TestReleaseRollsBackRegistryOnExcludeFailure(t *testing.T) {
-	ws, _ := committedWorkspace(t, "PLAN.md", "saved\n")
+	ws, root := committedWorkspace(t, "PLAN.md", "saved\n")
 	originalExclude := "# >>> frigo >>>\n# >>> frigo >>>\n"
-	if err := os.WriteFile(ws.repo.ExcludePath, []byte(originalExclude), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	testrepo.Write(t, root, ".git/info/exclude", originalExclude)
 
 	_, err := ws.Release(context.Background(), []string{"PLAN.md"}, false)
 	if err == nil || !strings.Contains(err.Error(), "malformed frigo section") {
@@ -806,11 +786,8 @@ func TestReleaseRollsBackRegistryOnExcludeFailure(t *testing.T) {
 	if !owned.OwnsExact("PLAN.md") {
 		t.Fatal("registry not rolled back after exclude failure")
 	}
-	contents, err := os.ReadFile(ws.repo.ExcludePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(contents) != originalExclude {
+	contents := testrepo.Read(t, root, ".git/info/exclude")
+	if contents != originalExclude {
 		t.Fatalf("exclude file = %q, want original malformed contents", contents)
 	}
 }
@@ -933,9 +910,7 @@ func initWorkspaceMetadata(t *testing.T, repo repository.Repository) error {
 	if err := os.MkdirAll(repo.HooksDir, 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(repo.AttributesPath, nil, 0o600); err != nil {
-		return err
-	}
+	testrepo.Write(t, repo.Root, filepath.Join(".git", "frigo", "attributes"), "")
 	testrepo.Run(t, repo.Root, "init", "--bare", "--quiet", repo.HistoryDir)
 	return registry.Save(repo.RegistryPath, registry.New())
 }
