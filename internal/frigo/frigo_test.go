@@ -632,6 +632,263 @@ func TestLogReportsNoSavedHistoryWithoutHead(t *testing.T) {
 	}
 }
 
+func TestReleaseDirtyPathRequiresForce(t *testing.T) {
+	ws, root := committedWorkspace(t, "PLAN.md", "saved\n")
+	testrepo.Write(t, root, "PLAN.md", "changed\n")
+
+	_, err := ws.Release(context.Background(), []string{"PLAN.md"}, false)
+	if err == nil || !strings.Contains(err.Error(), "uncommitted frigo changes") {
+		t.Fatalf("Release() error = %v", err)
+	}
+	owned, loadErr := registry.Load(ws.repo.RegistryPath)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if !owned.OwnsExact("PLAN.md") {
+		t.Fatal("dirty path was released")
+	}
+
+	assertNoPersistentIndex(t, ws)
+	assertNoTemporaryIndexes(t, ws)
+}
+
+func TestReleaseAndRestoreExactPathWithSpacesAndMetacharacters(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("magic filenames are not supported on Windows")
+	}
+	name := "  [keep]*?.md  "
+	ws, root := committedWorkspace(t, name, "saved\n")
+	testrepo.Write(t, root, name, "changed\n")
+
+	_, err := ws.Release(context.Background(), []string{name}, false)
+	if err == nil || !strings.Contains(err.Error(), "uncommitted frigo changes") {
+		t.Fatalf("Release() error = %v, want dirty refusal", err)
+	}
+	owned, err := registry.Load(ws.repo.RegistryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !owned.OwnsExact(name) {
+		t.Fatalf("registry lost exact ownership of %q", name)
+	}
+
+	restored, err := ws.Restore(context.Background(), []string{name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(restored, []string{name}) {
+		t.Fatalf("Restore() = %v, want %q", restored, name)
+	}
+	if got := testrepo.Read(t, root, name); got != "saved\n" {
+		t.Fatalf("restored file = %q, want saved content", got)
+	}
+
+	assertNoPersistentIndex(t, ws)
+	assertNoTemporaryIndexes(t, ws)
+}
+
+func TestReleaseForceRemovesExactOwnershipAndPreservesPhysicalFiles(t *testing.T) {
+	ws, root := committedWorkspace(t, "PLAN.md", "saved\n")
+	testrepo.Write(t, root, "PLAN.md", "changed\n")
+
+	result, err := ws.Release(context.Background(), []string{"PLAN.md"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(result.Released, []string{"PLAN.md"}) {
+		t.Fatalf("Release() released = %v, want [PLAN.md]", result.Released)
+	}
+	if len(result.Missing) != 0 {
+		t.Fatalf("Release() missing = %v, want empty", result.Missing)
+	}
+	owned, err := registry.Load(ws.repo.RegistryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owned.OwnsExact("PLAN.md") {
+		t.Fatal("forced release kept exact ownership")
+	}
+	if got := testrepo.Read(t, root, "PLAN.md"); got != "changed\n" {
+		t.Fatalf("PLAN.md = %q, want changed content preserved", got)
+	}
+	contents, err := os.ReadFile(ws.repo.ExcludePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(contents), "/PLAN.md") {
+		t.Fatalf("exclude file still contains PLAN.md after release: %q", contents)
+	}
+
+	assertNoPersistentIndex(t, ws)
+	assertNoTemporaryIndexes(t, ws)
+}
+
+func TestReleaseRequiresExactOwnedRoots(t *testing.T) {
+	ws, root := newWorkspace(t)
+	ownForTest(t, ws, "docs/local")
+	syncIgnoreForTest(t, ws)
+	testrepo.Write(t, root, "docs/local/plan.md", "saved\n")
+	saveForTest(t, ws, "save docs")
+
+	_, err := ws.Release(context.Background(), []string{"docs/local/plan.md"}, false)
+	if err == nil || !strings.Contains(err.Error(), "exact owned frigo root") {
+		t.Fatalf("Release() error = %v", err)
+	}
+	owned, loadErr := registry.Load(ws.repo.RegistryPath)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if !owned.OwnsExact("docs/local") {
+		t.Fatal("covered child released parent root")
+	}
+}
+
+func TestReleaseFinalRootRetainsHistory(t *testing.T) {
+	ws, root := committedWorkspace(t, "PLAN.md", "saved\n")
+
+	result, err := ws.Release(context.Background(), []string{"PLAN.md"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(result.Released, []string{"PLAN.md"}) {
+		t.Fatalf("Release() released = %v, want [PLAN.md]", result.Released)
+	}
+	owned, err := registry.Load(ws.repo.RegistryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(owned.Paths) != 0 {
+		t.Fatalf("registry paths = %v, want empty", owned.Paths)
+	}
+	if _, err := os.Stat(ws.repo.FrigoDir); err != nil {
+		t.Fatalf("frigo dir stat = %v", err)
+	}
+	if _, err := os.Stat(ws.repo.HistoryDir); err != nil {
+		t.Fatalf("history dir stat = %v", err)
+	}
+	hasHead, err := ws.hasHead(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasHead {
+		t.Fatal("Release() removed private HEAD")
+	}
+	log, err := ws.Log(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(log, "save PLAN.md") {
+		t.Fatalf("Log() = %q", log)
+	}
+	if got := testrepo.Read(t, root, "PLAN.md"); got != "saved\n" {
+		t.Fatalf("PLAN.md = %q, want physical file preserved", got)
+	}
+
+	assertNoPersistentIndex(t, ws)
+	assertNoTemporaryIndexes(t, ws)
+}
+
+func TestReleaseRollsBackRegistryOnExcludeFailure(t *testing.T) {
+	ws, _ := committedWorkspace(t, "PLAN.md", "saved\n")
+	originalExclude := "# >>> frigo >>>\n# >>> frigo >>>\n"
+	if err := os.WriteFile(ws.repo.ExcludePath, []byte(originalExclude), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := ws.Release(context.Background(), []string{"PLAN.md"}, false)
+	if err == nil || !strings.Contains(err.Error(), "malformed frigo section") {
+		t.Fatalf("Release() error = %v", err)
+	}
+	owned, loadErr := registry.Load(ws.repo.RegistryPath)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if !owned.OwnsExact("PLAN.md") {
+		t.Fatal("registry not rolled back after exclude failure")
+	}
+	contents, err := os.ReadFile(ws.repo.ExcludePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != originalExclude {
+		t.Fatalf("exclude file = %q, want original malformed contents", contents)
+	}
+}
+
+func TestRestoreRestoresSavedFilesFromHeadAndKeepsUnsavedNewFiles(t *testing.T) {
+	ws, root := newWorkspace(t)
+	ownForTest(t, ws, "docs/local")
+	testrepo.Write(t, root, "docs/local/plan.md", "saved\n")
+	saveForTest(t, ws, "save docs")
+	testrepo.Write(t, root, "docs/local/plan.md", "changed\n")
+	testrepo.Write(t, root, "docs/local/new.md", "new\n")
+
+	restored, err := ws.Restore(context.Background(), []string{"docs/local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(restored, []string{"docs/local"}) {
+		t.Fatalf("Restore() = %v, want [docs/local]", restored)
+	}
+	if got := testrepo.Read(t, root, "docs/local/plan.md"); got != "saved\n" {
+		t.Fatalf("restored plan = %q, want saved contents", got)
+	}
+	if got := testrepo.Read(t, root, "docs/local/new.md"); got != "new\n" {
+		t.Fatalf("unsaved new file = %q, want preserved", got)
+	}
+
+	assertNoPersistentIndex(t, ws)
+	assertNoTemporaryIndexes(t, ws)
+}
+
+func TestRestoreRejectsUnownedPath(t *testing.T) {
+	ws, _ := newWorkspace(t)
+	ownForTest(t, ws, "docs/local")
+
+	_, err := ws.Restore(context.Background(), []string{"README.md"})
+	if err == nil || !strings.Contains(err.Error(), "not owned by frigo") {
+		t.Fatalf("Restore() error = %v", err)
+	}
+}
+
+func TestRestoreRejectsBeforeFirstCommit(t *testing.T) {
+	ws, root := newWorkspace(t)
+	ownForTest(t, ws, "PLAN.md")
+	testrepo.Write(t, root, "PLAN.md", "draft\n")
+
+	_, err := ws.Restore(context.Background(), []string{"PLAN.md"})
+	if err == nil || !strings.Contains(err.Error(), "no saved history") {
+		t.Fatalf("Restore() error = %v", err)
+	}
+
+	assertNoPersistentIndex(t, ws)
+	assertNoTemporaryIndexes(t, ws)
+}
+
+func TestRestorePreflightsSavedVersions(t *testing.T) {
+	ws, root := newWorkspace(t)
+	ownForTest(t, ws, "PLAN.md")
+	testrepo.Write(t, root, "PLAN.md", "saved\n")
+	saveForTest(t, ws, "save plan")
+	ownForTest(t, ws, "NOTES.md")
+	testrepo.Write(t, root, "PLAN.md", "changed\n")
+	testrepo.Write(t, root, "NOTES.md", "new\n")
+
+	_, err := ws.Restore(context.Background(), []string{"PLAN.md", "NOTES.md"})
+	if err == nil || !strings.Contains(err.Error(), "NOTES.md has no saved version") {
+		t.Fatalf("Restore() error = %v", err)
+	}
+	if got := testrepo.Read(t, root, "PLAN.md"); got != "changed\n" {
+		t.Fatalf("PLAN.md = %q, want unchanged because restore should preflight", got)
+	}
+	if got := testrepo.Read(t, root, "NOTES.md"); got != "new\n" {
+		t.Fatalf("NOTES.md = %q, want never-committed file preserved", got)
+	}
+
+	assertNoPersistentIndex(t, ws)
+	assertNoTemporaryIndexes(t, ws)
+}
+
 func newWorkspace(t *testing.T) (*Workspace, string) {
 	t.Helper()
 	ws, root := newBareWorkspace(t)
@@ -645,6 +902,16 @@ func workspaceWithOwnership(t *testing.T, paths ...string) (*Workspace, string) 
 	t.Helper()
 	ws, root := newWorkspace(t)
 	ownForTest(t, ws, paths...)
+	return ws, root
+}
+
+func committedWorkspace(t *testing.T, path, contents string) (*Workspace, string) {
+	t.Helper()
+	ws, root := newWorkspace(t)
+	ownForTest(t, ws, path)
+	syncIgnoreForTest(t, ws)
+	testrepo.Write(t, root, path, contents)
+	saveForTest(t, ws, "save "+path)
 	return ws, root
 }
 
@@ -721,6 +988,17 @@ func saveForTest(t *testing.T, ws *Workspace, message string) {
 		_, err = ws.privateOutput(context.Background(), client, "update-ref", "HEAD", commit)
 		return err
 	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func syncIgnoreForTest(t *testing.T, ws *Workspace) {
+	t.Helper()
+	owned, err := registry.Load(ws.repo.RegistryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ignore.Sync(ws.repo, owned); err != nil {
 		t.Fatal(err)
 	}
 }
