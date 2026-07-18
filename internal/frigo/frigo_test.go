@@ -297,6 +297,185 @@ func TestListIncludesSavedAndNewOwnedFiles(t *testing.T) {
 	assertNoTemporaryIndexes(t, ws)
 }
 
+func TestCommitSelectedPathLeavesOtherOwnedChangeUncommitted(t *testing.T) {
+	ws, root := workspaceWithOwnership(t, "PLAN.md", "NOTES.md")
+	testrepo.Write(t, root, "PLAN.md", "plan\n")
+	testrepo.Write(t, root, "NOTES.md", "notes\n")
+
+	result, err := ws.Commit(context.Background(), CommitOptions{
+		Message: "add plan",
+		Paths:   []string{"PLAN.md"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Committed || result.Commit == "" {
+		t.Fatalf("Commit() = %+v, want committed result", result)
+	}
+
+	tree, err := ws.privateOutput(context.Background(), ws.git.WithEnv("GIT_ATTR_NOSYSTEM=1"), "ls-tree", "-r", "--name-only", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tree != "PLAN.md" {
+		t.Fatalf("HEAD files = %q", tree)
+	}
+	diff, err := ws.Diff(context.Background(), []string{"NOTES.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(diff, "+notes") {
+		t.Fatalf("diff = %q", diff)
+	}
+
+	assertNoPersistentIndex(t, ws)
+	assertNoTemporaryIndexes(t, ws)
+}
+
+func TestCommitAllIncludesDirectoryChildrenAndDeletions(t *testing.T) {
+	ws, root := workspaceWithOwnership(t, "docs/local")
+	testrepo.Write(t, root, "docs/local/old.md", "old\n")
+	saveForTest(t, ws, "save docs")
+	if err := os.Remove(filepath.Join(root, "docs/local/old.md")); err != nil {
+		t.Fatal(err)
+	}
+	testrepo.Write(t, root, "docs/local/sub/new.md", "new\n")
+
+	result, err := ws.Commit(context.Background(), CommitOptions{Message: "update docs", All: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Committed || result.Commit == "" {
+		t.Fatalf("Commit() = %+v, want committed result", result)
+	}
+
+	tree, err := ws.privateOutput(context.Background(), ws.git.WithEnv("GIT_ATTR_NOSYSTEM=1"), "ls-tree", "-r", "--name-only", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tree != "docs/local/sub/new.md" {
+		t.Fatalf("HEAD files = %q", tree)
+	}
+
+	assertNoPersistentIndex(t, ws)
+	assertNoTemporaryIndexes(t, ws)
+}
+
+func TestCommitRejectsEmptyMessage(t *testing.T) {
+	ws, _ := newWorkspace(t)
+
+	_, err := ws.Commit(context.Background(), CommitOptions{Paths: []string{"PLAN.md"}})
+	if err == nil || !strings.Contains(err.Error(), "commit message cannot be empty") {
+		t.Fatalf("Commit() error = %v", err)
+	}
+}
+
+func TestCommitRejectsMissingScopeWithoutAll(t *testing.T) {
+	ws, _ := newWorkspace(t)
+
+	_, err := ws.Commit(context.Background(), CommitOptions{Message: "save"})
+	if err == nil || !strings.Contains(err.Error(), "no paths specified") {
+		t.Fatalf("Commit() error = %v", err)
+	}
+}
+
+func TestCommitRejectsAllWithPaths(t *testing.T) {
+	ws, _ := newWorkspace(t)
+
+	_, err := ws.Commit(context.Background(), CommitOptions{
+		Message: "save",
+		All:     true,
+		Paths:   []string{"PLAN.md"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot combine -a with commit paths") {
+		t.Fatalf("Commit() error = %v", err)
+	}
+}
+
+func TestCommitReturnsNotCommittedWhenScopeUnchanged(t *testing.T) {
+	ws, root := workspaceWithOwnership(t, "PLAN.md")
+	testrepo.Write(t, root, "PLAN.md", "saved\n")
+	saveForTest(t, ws, "save plan")
+
+	result, err := ws.Commit(context.Background(), CommitOptions{
+		Message: "save plan again",
+		Paths:   []string{"PLAN.md"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Committed || result.Commit != "" {
+		t.Fatalf("Commit() = %+v, want not committed", result)
+	}
+
+	assertNoPersistentIndex(t, ws)
+	assertNoTemporaryIndexes(t, ws)
+}
+
+func TestCommitUsesEffectiveMainRepositoryIdentity(t *testing.T) {
+	ws, root := workspaceWithOwnership(t, "PLAN.md")
+	testrepo.Write(t, root, "PLAN.md", "plan\n")
+	testrepo.Run(t, root, "config", "user.name", "Repo Name")
+	testrepo.Run(t, root, "config", "user.email", "repo@example.invalid")
+	ws.git = ws.git.WithEnv(
+		"GIT_AUTHOR_NAME=Env Author Name",
+		"GIT_AUTHOR_EMAIL=author@example.invalid",
+		"GIT_COMMITTER_NAME=Env Committer Name",
+		"GIT_COMMITTER_EMAIL=committer@example.invalid",
+	)
+
+	result, err := ws.Commit(context.Background(), CommitOptions{
+		Message: "add plan",
+		Paths:   []string{"PLAN.md"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Committed || result.Commit == "" {
+		t.Fatalf("Commit() = %+v, want committed result", result)
+	}
+
+	header, err := ws.privateOutput(context.Background(), ws.git.WithEnv("GIT_ATTR_NOSYSTEM=1"), "show", "-s", "--format=%an <%ae>|%cn <%ce>", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := header, "Env Author Name <author@example.invalid>|Env Committer Name <committer@example.invalid>"; got != want {
+		t.Fatalf("private HEAD identity = %q, want %q", got, want)
+	}
+
+	assertNoPersistentIndex(t, ws)
+	assertNoTemporaryIndexes(t, ws)
+}
+
+func TestCommitRemovedTemporaryIndexOnIdentityFailure(t *testing.T) {
+	ws, root := workspaceWithOwnership(t, "PLAN.md")
+	testrepo.Write(t, root, "PLAN.md", "plan\n")
+	testrepo.Run(t, root, "config", "--unset", "user.name")
+	testrepo.Run(t, root, "config", "--unset", "user.email")
+	home := t.TempDir()
+	ws.git = ws.git.WithEnv(
+		"HOME="+home,
+		"XDG_CONFIG_HOME="+home,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_AUTHOR_NAME=",
+		"GIT_AUTHOR_EMAIL=",
+		"GIT_COMMITTER_NAME=",
+		"GIT_COMMITTER_EMAIL=",
+		"EMAIL=",
+	)
+
+	_, err := ws.Commit(context.Background(), CommitOptions{
+		Message: "add plan",
+		Paths:   []string{"PLAN.md"},
+	})
+	if err == nil {
+		t.Fatal("Commit() error = nil, want identity failure")
+	}
+
+	assertNoPersistentIndex(t, ws)
+	assertNoTemporaryIndexes(t, ws)
+}
+
 func TestTemporaryIndexRemovedOnFailure(t *testing.T) {
 	ws, root := newWorkspace(t)
 	ownForTest(t, ws, "PLAN.md")
@@ -459,6 +638,13 @@ func newWorkspace(t *testing.T) (*Workspace, string) {
 	if err := initWorkspaceMetadata(t, ws.repo); err != nil {
 		t.Fatal(err)
 	}
+	return ws, root
+}
+
+func workspaceWithOwnership(t *testing.T, paths ...string) (*Workspace, string) {
+	t.Helper()
+	ws, root := newWorkspace(t)
+	ownForTest(t, ws, paths...)
 	return ws, root
 }
 
