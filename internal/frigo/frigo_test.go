@@ -4,16 +4,261 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	gitpkg "frigo/internal/git"
+	"frigo/internal/ignore"
 	"frigo/internal/registry"
 	"frigo/internal/repository"
 	"frigo/internal/testrepo"
 )
+
+func TestAddInitializesWithoutCommitting(t *testing.T) {
+	ws, root := newBareWorkspace(t)
+	testrepo.Write(t, root, "PLAN.md", "draft\n")
+
+	result, err := ws.Add(context.Background(), []string{"./PLAN.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(result.Added, []string{"PLAN.md"}) {
+		t.Fatalf("Add() added = %v, want [PLAN.md]", result.Added)
+	}
+	if len(result.AlreadyOwned) != 0 {
+		t.Fatalf("Add() already owned = %v, want empty", result.AlreadyOwned)
+	}
+	if len(result.ReleasedCovered) != 0 {
+		t.Fatalf("Add() released covered = %v, want empty", result.ReleasedCovered)
+	}
+	if _, err := os.Stat(ws.repo.HistoryDir); err != nil {
+		t.Fatalf("history dir stat = %v", err)
+	}
+	if _, err := os.Stat(ws.repo.RegistryPath); err != nil {
+		t.Fatalf("registry stat = %v", err)
+	}
+	if _, err := os.Stat(ws.repo.HooksDir); err != nil {
+		t.Fatalf("hooks dir stat = %v", err)
+	}
+	if _, err := os.Stat(ws.repo.AttributesPath); err != nil {
+		t.Fatalf("attributes file stat = %v", err)
+	}
+	owned, err := registry.Load(ws.repo.RegistryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(owned.Paths, []string{"PLAN.md"}) {
+		t.Fatalf("registry paths = %v, want [PLAN.md]", owned.Paths)
+	}
+	contents, err := os.ReadFile(ws.repo.ExcludePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contents), "/PLAN.md") {
+		t.Fatalf("exclude file = %q, want /PLAN.md", contents)
+	}
+	hasHead, err := ws.hasHead(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasHead {
+		t.Fatal("Add() created a commit")
+	}
+
+	assertNoPersistentIndex(t, ws)
+	assertNoTemporaryIndexes(t, ws)
+}
+
+func TestAddRollsBackNewMetadataOnInitialSaveFailure(t *testing.T) {
+	ws, root := newBareWorkspace(t)
+	testrepo.Write(t, root, "PLAN.md", "draft\n")
+	originalExclude := "keep me\n"
+	if err := os.WriteFile(ws.repo.ExcludePath, []byte(originalExclude), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldSave := saveRegistry
+	saveRegistry = func(filename string, owned registry.Registry) error {
+		if err := os.MkdirAll(ws.repo.FrigoDir, 0o700); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(ws.repo.HooksDir, 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(ws.repo.AttributesPath, []byte("partial\n"), 0o600); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(ws.repo.HistoryDir, 0o700); err != nil {
+			return err
+		}
+		return errors.New("forced save failure")
+	}
+	t.Cleanup(func() { saveRegistry = oldSave })
+
+	_, err := ws.Add(context.Background(), []string{"PLAN.md"})
+	if err == nil || !strings.Contains(err.Error(), "forced save failure") {
+		t.Fatalf("Add() error = %v", err)
+	}
+	if _, statErr := os.Stat(ws.repo.FrigoDir); !os.IsNotExist(statErr) {
+		t.Fatalf("frigo metadata remains after rollback: %v", statErr)
+	}
+	contents, err := os.ReadFile(ws.repo.ExcludePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(contents); got != originalExclude {
+		t.Fatalf("exclude file = %q, want %q", got, originalExclude)
+	}
+}
+
+func TestAddRefusesPreexistingFrigoDirWithoutMetadata(t *testing.T) {
+	ws, root := newBareWorkspace(t)
+	testrepo.Write(t, root, "PLAN.md", "draft\n")
+	if err := os.MkdirAll(ws.repo.FrigoDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws.repo.FrigoDir, "keep.txt"), []byte("keep\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := ws.Add(context.Background(), []string{"PLAN.md"})
+	if err == nil || !strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("Add() error = %v, want incomplete metadata", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(ws.repo.FrigoDir, "keep.txt")); statErr != nil {
+		t.Fatalf("preexisting frigo dir content removed: %v", statErr)
+	}
+}
+
+func TestAddReturnsNormalizedAlreadyOwnedPaths(t *testing.T) {
+	ws, root := newWorkspace(t)
+	if err := os.MkdirAll(filepath.Join(root, "docs", "local"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ownForTest(t, ws, "docs/local")
+
+	result, err := ws.Add(context.Background(), []string{"./docs/local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Added) != 0 {
+		t.Fatalf("Add() added = %v, want empty", result.Added)
+	}
+	want := map[string]string{"docs/local": "docs/local"}
+	if len(result.AlreadyOwned) != len(want) {
+		t.Fatalf("Add() already owned = %v, want %v", result.AlreadyOwned, want)
+	}
+	for path, covering := range want {
+		if got, ok := result.AlreadyOwned[path]; !ok || got != covering {
+			t.Fatalf("Add() already owned = %v, want %v", result.AlreadyOwned, want)
+		}
+	}
+}
+
+func TestAddRejectsMainTrackedPaths(t *testing.T) {
+	ws, _ := newBareWorkspace(t)
+
+	_, err := ws.Add(context.Background(), []string{"README.md"})
+	if err == nil || !strings.Contains(err.Error(), "tracked by the main repository") {
+		t.Fatalf("Add() error = %v", err)
+	}
+	if _, statErr := os.Stat(ws.repo.RegistryPath); !os.IsNotExist(statErr) {
+		t.Fatalf("registry remains after tracked add: %v", statErr)
+	}
+	if _, statErr := os.Stat(ws.repo.HistoryDir); !os.IsNotExist(statErr) {
+		t.Fatalf("history remains after tracked add: %v", statErr)
+	}
+}
+
+func TestAddTreatsEmptyDirectoryAsIgnored(t *testing.T) {
+	ws, root := newBareWorkspace(t)
+	if err := os.MkdirAll(filepath.Join(root, "notes", "private"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ws.Add(context.Background(), []string{"notes/private"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(result.Added, []string{"notes/private"}) {
+		t.Fatalf("Add() added = %v, want [notes/private]", result.Added)
+	}
+	if got, err := ws.Status(context.Background(), nil); err != nil {
+		t.Fatalf("Status() error = %v", err)
+	} else if got != "" {
+		t.Fatalf("Status() = %q, want clean", got)
+	}
+	if got, err := ws.Diff(context.Background(), nil); err != nil {
+		t.Fatalf("Diff() error = %v", err)
+	} else if got != "" {
+		t.Fatalf("Diff() = %q, want clean", got)
+	}
+	testrepo.Run(t, root, "check-ignore", "--quiet", "--no-index", "--", "notes/private")
+}
+
+func TestAddRollsBackNewMetadataOnConfigFailure(t *testing.T) {
+	ws, root := newBareWorkspace(t)
+	testrepo.Write(t, root, "PLAN.md", "draft\n")
+	failing := NewWorkspace(ws.repo, failingGitClient(t, ws.repo.HistoryDir, "config", ""), root)
+
+	_, err := failing.Add(context.Background(), []string{"PLAN.md"})
+	if err == nil || !strings.Contains(err.Error(), "forced git failure") {
+		t.Fatalf("Add() error = %v", err)
+	}
+	if _, statErr := os.Stat(ws.repo.FrigoDir); !os.IsNotExist(statErr) {
+		t.Fatalf("frigo metadata remains after rollback: %v", statErr)
+	}
+	contents, readErr := os.ReadFile(ws.repo.ExcludePath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if strings.Contains(string(contents), "/PLAN.md") {
+		t.Fatalf("exclude file still contains PLAN.md after rollback: %q", contents)
+	}
+}
+
+func TestAddRollsBackRegistryAndIgnoreOnVisibilityCheckFailure(t *testing.T) {
+	ws, root := newWorkspace(t)
+	ownForTest(t, ws, "docs/local")
+	owned, err := registry.Load(ws.repo.RegistryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ignore.Sync(ws.repo, owned); err != nil {
+		t.Fatal(err)
+	}
+	testrepo.Write(t, root, "PLAN.md", "draft\n")
+	failing := NewWorkspace(ws.repo, failingGitClient(t, "", "ls-files", "--others"), root)
+
+	_, err = failing.Add(context.Background(), []string{"PLAN.md"})
+	if err == nil || !strings.Contains(err.Error(), "forced git failure") {
+		t.Fatalf("Add() error = %v", err)
+	}
+	owned, err = registry.Load(ws.repo.RegistryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(owned.Paths, []string{"docs/local"}) {
+		t.Fatalf("registry paths after rollback = %v, want [docs/local]", owned.Paths)
+	}
+	contents, err := os.ReadFile(ws.repo.ExcludePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(contents)
+	if !strings.Contains(text, "/docs/local") {
+		t.Fatalf("exclude file lost original path after rollback: %q", contents)
+	}
+	if strings.Contains(text, "/PLAN.md") {
+		t.Fatalf("exclude file kept new path after rollback: %q", contents)
+	}
+	if _, statErr := os.Stat(ws.repo.HistoryDir); statErr != nil {
+		t.Fatalf("existing history missing after rollback: %v", statErr)
+	}
+}
 
 func TestDiffShowsNewOwnedFileWithoutPersistentIndex(t *testing.T) {
 	ws, root := newWorkspace(t)
@@ -210,15 +455,21 @@ func TestLogReportsNoSavedHistoryWithoutHead(t *testing.T) {
 
 func newWorkspace(t *testing.T) (*Workspace, string) {
 	t.Helper()
+	ws, root := newBareWorkspace(t)
+	if err := initWorkspaceMetadata(t, ws.repo); err != nil {
+		t.Fatal(err)
+	}
+	return ws, root
+}
+
+func newBareWorkspace(t *testing.T) (*Workspace, string) {
+	t.Helper()
 	root := testrepo.Init(t)
 	testrepo.Write(t, root, "README.md", "main\n")
 	testrepo.CommitAll(t, root, "initial", "README.md")
 
 	repo, err := repository.Discover(context.Background(), gitpkg.Client{Path: "git"}, root)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := initWorkspaceMetadata(t, repo); err != nil {
 		t.Fatal(err)
 	}
 	return NewWorkspace(repo, gitpkg.Client{Path: "git"}, root), root
@@ -304,4 +555,47 @@ func assertNoTemporaryIndexes(t *testing.T, ws *Workspace) {
 	if len(matches) != 0 {
 		t.Fatalf("temporary indexes remain: %v", matches)
 	}
+}
+
+func failingGitClient(t *testing.T, failGitDir, failCommand, failArg string) gitpkg.Client {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git is required")
+	}
+	wrapper := filepath.Join(t.TempDir(), "git-wrapper")
+	script := "#!/bin/sh\n" +
+		"set -eu\n" +
+		"match_dir=0\n" +
+		"if [ \"${FRIGO_FAIL_GIT_DIR:-}\" = \"\" ]; then\n" +
+		"  match_dir=1\n" +
+		"elif [ \"${1-}\" = \"--git-dir=${FRIGO_FAIL_GIT_DIR}\" ]; then\n" +
+		"  match_dir=1\n" +
+		"fi\n" +
+		"if [ \"$match_dir\" = 1 ]; then\n" +
+		"  seen_command=0\n" +
+		"  seen_arg=0\n" +
+		"  for arg in \"$@\"; do\n" +
+		"    if [ \"$arg\" = \"${FRIGO_FAIL_COMMAND:-}\" ]; then\n" +
+		"      seen_command=1\n" +
+		"    fi\n" +
+		"    if [ \"${FRIGO_FAIL_ARG:-}\" = \"\" ] || [ \"$arg\" = \"${FRIGO_FAIL_ARG}\" ]; then\n" +
+		"      seen_arg=1\n" +
+		"    fi\n" +
+		"  done\n" +
+		"  if [ \"$seen_command\" = 1 ] && [ \"$seen_arg\" = 1 ]; then\n" +
+		"    echo 'forced git failure' >&2\n" +
+		"    exit 42\n" +
+		"  fi\n" +
+		"fi\n" +
+		"exec \"${FRIGO_REAL_GIT}\" \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return gitpkg.Client{Path: wrapper}.WithEnv(
+		"FRIGO_REAL_GIT="+realGit,
+		"FRIGO_FAIL_GIT_DIR="+failGitDir,
+		"FRIGO_FAIL_COMMAND="+failCommand,
+		"FRIGO_FAIL_ARG="+failArg,
+	)
 }

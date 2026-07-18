@@ -44,6 +44,31 @@ func (w *Workspace) resolveScopedPaths(rawPaths []string, owned registry.Registr
 }
 
 func (w *Workspace) resolveScopedPath(raw string) (string, error) {
+	return w.normalizePath(raw, false)
+}
+
+func (w *Workspace) normalizePaths(rawPaths []string, requireExist bool) ([]string, error) {
+	if len(rawPaths) == 0 {
+		return nil, fmt.Errorf("at least one path is required")
+	}
+	seen := make(map[string]struct{}, len(rawPaths))
+	paths := make([]string, 0, len(rawPaths))
+	for _, raw := range rawPaths {
+		candidate, err := w.normalizePath(raw, requireExist)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		paths = append(paths, candidate)
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func (w *Workspace) normalizePath(raw string, requireExist bool) (string, error) {
 	if raw == "" || strings.ContainsAny(raw, "\r\n") {
 		return "", fmt.Errorf("invalid path %q", raw)
 	}
@@ -69,6 +94,14 @@ func (w *Workspace) resolveScopedPath(raw string) (string, error) {
 	relative = filepath.ToSlash(relative)
 	if relative == ".git" || strings.HasPrefix(relative, ".git/") {
 		return "", fmt.Errorf("Git metadata cannot be managed by frigo")
+	}
+	if requireExist {
+		if _, err := os.Lstat(absolute); err != nil {
+			if os.IsNotExist(err) {
+				return "", fmt.Errorf("%s does not exist", raw)
+			}
+			return "", fmt.Errorf("inspect %s: %w", raw, err)
+		}
 	}
 	return relative, nil
 }
