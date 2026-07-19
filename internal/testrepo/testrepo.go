@@ -15,11 +15,23 @@ func Init(t *testing.T) string {
 		t.Skip("git is required")
 	}
 
-	root := t.TempDir()
+	root := tempDir(t)
 	Run(t, root, "init", "--quiet")
 	Run(t, root, "config", "user.name", "Frigo Test")
 	Run(t, root, "config", "user.email", "frigo@example.invalid")
 	return root
+}
+
+func tempDir(t *testing.T) string {
+	t.Helper()
+	if info, err := os.Stat("/dev/shm"); err == nil && info.IsDir() {
+		root, err := os.MkdirTemp("/dev/shm", "frigo-test-*")
+		if err == nil {
+			t.Cleanup(func() { _ = os.RemoveAll(root) })
+			return root
+		}
+	}
+	return t.TempDir()
 }
 
 func Run(t *testing.T, root string, args ...string) {

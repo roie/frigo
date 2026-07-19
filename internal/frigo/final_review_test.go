@@ -50,11 +50,11 @@ var separationOperations = []workspaceOperation{
 }
 
 func TestPrivateOperationsRejectMainIndexDrift(t *testing.T) {
+	ws, root := committedWorkspace(t, "PLAN.md", "saved\n")
+	testrepo.Run(t, root, "add", "--force", "--", "PLAN.md")
+
 	for _, operation := range separationOperations {
 		t.Run(operation.name, func(t *testing.T) {
-			ws, root := committedWorkspace(t, "PLAN.md", "saved\n")
-			testrepo.Run(t, root, "add", "--force", "--", "PLAN.md")
-
 			err := operation.run(ws, "PLAN.md")
 			if err == nil || !strings.Contains(err.Error(), "tracked by the main repository") {
 				t.Fatalf("%s error = %v, want main-index separation error", operation.name, err)
@@ -64,11 +64,11 @@ func TestPrivateOperationsRejectMainIndexDrift(t *testing.T) {
 }
 
 func TestPrivateOperationsRejectEffectiveIgnoreDrift(t *testing.T) {
+	ws, root := committedWorkspace(t, "PLAN.md", "saved\n")
+	testrepo.Write(t, root, ".gitignore", "!PLAN.md\n")
+
 	for _, operation := range separationOperations {
 		t.Run(operation.name, func(t *testing.T) {
-			ws, root := committedWorkspace(t, "PLAN.md", "saved\n")
-			testrepo.Write(t, root, ".gitignore", "!PLAN.md\n")
-
 			err := operation.run(ws, "PLAN.md")
 			if err == nil || !strings.Contains(err.Error(), "not ignored by the main repository") {
 				t.Fatalf("%s error = %v, want effective-ignore separation error", operation.name, err)
@@ -87,35 +87,37 @@ func TestPrivateOperationsRejectEffectiveIgnoreDriftForMissingRoots(t *testing.T
 		{path: "\"quote.md", ignoreNegate: "!/\"quote.md\n"},
 	}
 	for _, tt := range tests {
-		for _, operation := range separationOperations {
-			t.Run(tt.path+"/"+operation.name, func(t *testing.T) {
-				ws, root := committedWorkspace(t, tt.path, "saved\n")
-				filename := filepath.Join(root, filepath.FromSlash(tt.path))
-				if err := os.Remove(filename); err != nil {
-					t.Fatal(err)
-				}
-				testrepo.Write(t, root, ".gitignore", tt.ignoreNegate)
+		t.Run(tt.path, func(t *testing.T) {
+			ws, root := committedWorkspace(t, tt.path, "saved\n")
+			filename := filepath.Join(root, filepath.FromSlash(tt.path))
+			if err := os.Remove(filename); err != nil {
+				t.Fatal(err)
+			}
+			testrepo.Write(t, root, ".gitignore", tt.ignoreNegate)
 
-				err := operation.run(ws, tt.path)
-				if err == nil || !strings.Contains(err.Error(), "not ignored by the main repository") {
-					t.Fatalf("%s error = %v, want effective-ignore separation error", operation.name, err)
-				}
-				if _, statErr := os.Stat(filename); !os.IsNotExist(statErr) {
-					t.Fatalf("%s recreated %s despite separation error; stat error = %v", operation.name, tt.path, statErr)
-				}
-			})
-		}
+			for _, operation := range separationOperations {
+				t.Run(operation.name, func(t *testing.T) {
+					err := operation.run(ws, tt.path)
+					if err == nil || !strings.Contains(err.Error(), "not ignored by the main repository") {
+						t.Fatalf("%s error = %v, want effective-ignore separation error", operation.name, err)
+					}
+					if _, statErr := os.Stat(filename); !os.IsNotExist(statErr) {
+						t.Fatalf("%s recreated %s despite separation error; stat error = %v", operation.name, tt.path, statErr)
+					}
+				})
+			}
+		})
 	}
 }
 
 func TestPrivateOperationsRejectEffectiveIgnoreDriftForDirectoryRoot(t *testing.T) {
+	ws, root := workspaceWithOwnership(t, "foo")
+	testrepo.Write(t, root, "foo/current.txt", "saved\n")
+	saveForTest(t, ws, "save foo")
+	testrepo.Write(t, root, ".gitignore", "!/foo/\n/foo/current.txt\n")
+
 	for _, operation := range separationOperations {
 		t.Run(operation.name, func(t *testing.T) {
-			ws, root := workspaceWithOwnership(t, "foo")
-			testrepo.Write(t, root, "foo/current.txt", "saved\n")
-			saveForTest(t, ws, "save foo")
-			testrepo.Write(t, root, ".gitignore", "!/foo/\n/foo/current.txt\n")
-
 			err := operation.run(ws, "foo")
 			if err == nil || !strings.Contains(err.Error(), "not ignored by the main repository") {
 				t.Fatalf("%s error = %v, want effective-ignore separation error", operation.name, err)
@@ -208,14 +210,14 @@ func TestEstablishedMetadataAllowsBareHistoryWithoutHEAD(t *testing.T) {
 }
 
 func TestPrivateOperationsReportSeparationBeforeCorruptHistory(t *testing.T) {
+	ws, root := committedWorkspace(t, "PLAN.md", "saved\n")
+	testrepo.Run(t, root, "add", "--force", "--", "PLAN.md")
+	if err := os.WriteFile(filepath.Join(ws.repo.HistoryDir, "config"), []byte("[core\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	for _, operation := range separationOperations {
 		t.Run(operation.name, func(t *testing.T) {
-			ws, root := committedWorkspace(t, "PLAN.md", "saved\n")
-			testrepo.Run(t, root, "add", "--force", "--", "PLAN.md")
-			if err := os.WriteFile(filepath.Join(ws.repo.HistoryDir, "config"), []byte("[core\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-
 			err := operation.run(ws, "PLAN.md")
 			if err == nil || !strings.Contains(err.Error(), "tracked by the main repository") {
 				t.Fatalf("%s error = %v, want separation error before history validation", operation.name, err)
