@@ -14,7 +14,7 @@ import (
 
 const wantUsage = "Usage: frigo <command> [options]\nCommands: add, release, status, list, diff, commit, log, restore, help\nRun 'frigo help' for detailed help.\n"
 
-const wantHelp = `frigo keeps selected paths in a separate local Git history.
+const wantHelp = `frigo keeps local project files without adding them to your main Git history.
 
 Usage:
   frigo add [--] <path>...

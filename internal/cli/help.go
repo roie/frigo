@@ -13,7 +13,7 @@ Run 'frigo help' for detailed help.`)
 }
 
 func printHelp(output io.Writer) {
-	fmt.Fprintln(output, `frigo keeps selected paths in a separate local Git history.
+	fmt.Fprintln(output, `frigo keeps local project files without adding them to your main Git history.
 
 Usage:
   frigo add [--] <path>...
