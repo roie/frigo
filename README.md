@@ -20,21 +20,36 @@ frigo release PLAN.md
 - Use `release --force PLAN.md` only when uncommitted frigo changes intentionally remain.
 - `status`, `diff`, `list`/`ls`, `log`, and `restore` inspect or recover the private history.
 
-## Build from source
+## Install
 
 Requirements:
 
 - Git 2.23 or newer on `PATH`
 - A Git worktree
-- Go 1.22
 
-Build the binary locally:
+Install from npm:
+
+```bash
+npm install -g frigo
+```
+
+Or run without a global install:
+
+```bash
+npx frigo --help
+```
+
+Source builds are also supported with Go 1.26.5 or newer:
+
+```bash
+go install github.com/roie/frigo/cmd/frigo@latest
+```
+
+For local development:
 
 ```bash
 go build -trimpath -o frigo ./cmd/frigo
 ```
-
-This repository has no published module URL, so source builds are the supported install path for now.
 
 ## Behavior
 

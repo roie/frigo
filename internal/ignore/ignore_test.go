@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"frigo/internal/git"
-	"frigo/internal/registry"
-	"frigo/internal/repository"
-	"frigo/internal/testrepo"
+	"github.com/roie/frigo/internal/git"
+	"github.com/roie/frigo/internal/registry"
+	"github.com/roie/frigo/internal/repository"
+	"github.com/roie/frigo/internal/testrepo"
 )
 
 func TestLiteralPatternEscapesGitMetacharacters(t *testing.T) {

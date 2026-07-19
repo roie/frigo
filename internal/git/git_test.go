@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"frigo/internal/testrepo"
+	"github.com/roie/frigo/internal/testrepo"
 )
 
 func TestParseVersion(t *testing.T) {

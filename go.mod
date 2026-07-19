@@ -1,3 +1,3 @@
-module frigo
+module github.com/roie/frigo
 
-go 1.22
+go 1.26.5

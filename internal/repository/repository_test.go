@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"frigo/internal/git"
-	"frigo/internal/testrepo"
+	"github.com/roie/frigo/internal/git"
+	"github.com/roie/frigo/internal/testrepo"
 )
 
 func TestDiscoverUsesFrigoHistoryNames(t *testing.T) {

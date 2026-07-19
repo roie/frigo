@@ -11,11 +11,11 @@ import (
 	"strings"
 	"testing"
 
-	gitpkg "frigo/internal/git"
-	"frigo/internal/ignore"
-	"frigo/internal/registry"
-	"frigo/internal/repository"
-	"frigo/internal/testrepo"
+	gitpkg "github.com/roie/frigo/internal/git"
+	"github.com/roie/frigo/internal/ignore"
+	"github.com/roie/frigo/internal/registry"
+	"github.com/roie/frigo/internal/repository"
+	"github.com/roie/frigo/internal/testrepo"
 )
 
 func TestAddInitializesWithoutCommitting(t *testing.T) {

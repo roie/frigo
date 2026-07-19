@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"frigo/internal/git"
-	"frigo/internal/ignore"
-	"frigo/internal/registry"
+	"github.com/roie/frigo/internal/git"
+	"github.com/roie/frigo/internal/ignore"
+	"github.com/roie/frigo/internal/registry"
 )
 
 var saveRegistry = registry.Save

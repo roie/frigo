@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 
-	"frigo/internal/cli"
+	"github.com/roie/frigo/internal/cli"
 )
 
 func main() {

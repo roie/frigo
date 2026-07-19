@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"frigo/internal/git"
-	"frigo/internal/ignore"
-	"frigo/internal/registry"
+	"github.com/roie/frigo/internal/git"
+	"github.com/roie/frigo/internal/ignore"
+	"github.com/roie/frigo/internal/registry"
 )
 
 func (w *Workspace) Release(ctx context.Context, rawPaths []string, force bool) (registry.ReleaseResult, error) {

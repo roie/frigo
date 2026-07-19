@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"frigo/internal/git"
-	"frigo/internal/registry"
+	"github.com/roie/frigo/internal/git"
+	"github.com/roie/frigo/internal/registry"
 )
 
 type CommitOptions struct {

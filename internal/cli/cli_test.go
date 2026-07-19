@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"frigo/internal/testrepo"
+	"github.com/roie/frigo/internal/testrepo"
 )
 
 const wantUsage = "Usage: frigo <command> [options]\nCommands: add, release, status, list, diff, commit, log, restore, help\nRun 'frigo help' for detailed help.\n"
@@ -62,6 +62,13 @@ func TestBareUsageAndDetailedHelpDoNotRequireRepository(t *testing.T) {
 		if got.stdout != wantHelp {
 			t.Fatalf("args=%v stdout:\n%q\nwant:\n%q", args, got.stdout, wantHelp)
 		}
+	}
+}
+
+func TestVersionDoesNotRequireRepository(t *testing.T) {
+	got := invoke(t, t.TempDir(), "--version")
+	if got.code != 0 || got.stderr != "" || got.stdout != "frigo dev\n" {
+		t.Fatalf("result=%+v, want stdout %q", got, "frigo dev\n")
 	}
 }
 

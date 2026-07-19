@@ -3,8 +3,8 @@ package frigo
 import (
 	"context"
 
-	"frigo/internal/git"
-	"frigo/internal/repository"
+	"github.com/roie/frigo/internal/git"
+	"github.com/roie/frigo/internal/repository"
 )
 
 type Workspace struct {

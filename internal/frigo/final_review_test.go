@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	gitpkg "frigo/internal/git"
-	"frigo/internal/repository"
-	"frigo/internal/testrepo"
+	gitpkg "github.com/roie/frigo/internal/git"
+	"github.com/roie/frigo/internal/repository"
+	"github.com/roie/frigo/internal/testrepo"
 )
 
 type workspaceOperation struct {

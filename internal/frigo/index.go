@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"frigo/internal/git"
+	"github.com/roie/frigo/internal/git"
 )
 
 var (

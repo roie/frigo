@@ -1,0 +1,187 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Test
+        run: go test ./...
+
+  release:
+    name: Publish
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Build package binaries
+        env:
+          GOFLAGS: -mod=readonly
+          VERSION: ${{ github.ref_name }}
+        run: |
+          version="${VERSION#v}"
+          ldflags="-s -w -X github.com/roie/frigo/internal/cli.version=${version}"
+          mkdir -p vendor/linux-x64 vendor/linux-arm64 vendor/win32-x64 vendor/win32-arm64 vendor/darwin-x64 vendor/darwin-arm64
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o vendor/linux-x64/frigo ./cmd/frigo
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o vendor/linux-arm64/frigo ./cmd/frigo
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o vendor/win32-x64/frigo.exe ./cmd/frigo
+          GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o vendor/win32-arm64/frigo.exe ./cmd/frigo
+          GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o vendor/darwin-x64/frigo ./cmd/frigo
+          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o vendor/darwin-arm64/frigo ./cmd/frigo
+
+      - name: Generate npm package files
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          version="${VERSION#v}"
+          mkdir -p bin
+          cat > package.json <<EOF
+          {
+            "name": "frigo",
+            "version": "${version}",
+            "description": "Lightweight path ownership for Git workspaces.",
+            "bin": {
+              "frigo": "bin/frigo.js"
+            },
+            "files": [
+              "bin/",
+              "vendor/",
+              "LICENSE",
+              "README.md"
+            ],
+            "license": "Apache-2.0",
+            "repository": {
+              "type": "git",
+              "url": "git+https://github.com/roie/frigo.git"
+            },
+            "bugs": {
+              "url": "https://github.com/roie/frigo/issues"
+            },
+            "homepage": "https://github.com/roie/frigo#readme",
+            "keywords": [
+              "git",
+              "cli",
+              "workspace",
+              "ownership"
+            ],
+            "os": [
+              "linux",
+              "win32",
+              "darwin"
+            ],
+            "cpu": [
+              "x64",
+              "arm64"
+            ],
+            "engines": {
+              "node": ">=18"
+            }
+          }
+          EOF
+          cat > bin/frigo.js <<'EOF'
+          #!/usr/bin/env node
+
+          const { spawnSync } = require("node:child_process");
+          const path = require("node:path");
+
+          const platform = process.platform;
+          const arch = process.arch;
+          const exe = platform === "win32" ? "frigo.exe" : "frigo";
+          const binary = path.join(__dirname, "..", "vendor", `${platform}-${arch}`, exe);
+
+          const result = spawnSync(binary, process.argv.slice(2), { stdio: "inherit" });
+
+          if (result.error) {
+            console.error(`frigo binary not available for ${platform}-${arch}`);
+            console.error(result.error.message);
+            process.exit(1);
+          }
+
+          if (result.signal) {
+            process.kill(process.pid, result.signal);
+          }
+
+          process.exit(result.status ?? 1);
+          EOF
+          chmod +x bin/frigo.js
+
+      - name: Pack and smoke test npm package
+        id: pack
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          version="${VERSION#v}"
+          tarball="$(npm pack)"
+          echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
+          install_dir="$(mktemp -d)"
+          npm install --prefix "$install_dir" "$tarball"
+          frigo_bin="$install_dir/node_modules/.bin/frigo"
+          test "$("$frigo_bin" --version)" = "frigo ${version}"
+          test -f "$install_dir/node_modules/frigo/vendor/linux-x64/frigo"
+          test -f "$install_dir/node_modules/frigo/vendor/linux-arm64/frigo"
+          test -f "$install_dir/node_modules/frigo/vendor/win32-x64/frigo.exe"
+          test -f "$install_dir/node_modules/frigo/vendor/win32-arm64/frigo.exe"
+          test -f "$install_dir/node_modules/frigo/vendor/darwin-x64/frigo"
+          test -f "$install_dir/node_modules/frigo/vendor/darwin-arm64/frigo"
+          test -f "$install_dir/node_modules/frigo/LICENSE"
+
+      - name: Publish npm package
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: npm publish "$TARBALL" --access public
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: >-
+          gh release create "$RELEASE_TAG"
+          --title "$RELEASE_TAG"
+          --generate-notes

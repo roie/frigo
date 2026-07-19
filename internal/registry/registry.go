@@ -8,7 +8,7 @@ import (
 	"os"
 	"sort"
 
-	"frigo/internal/atomicfile"
+	"github.com/roie/frigo/internal/atomicfile"
 )
 
 const CurrentVersion = 1

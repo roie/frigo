@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"frigo/internal/git"
+	"github.com/roie/frigo/internal/git"
 )
 
 // Repository describes the main Git worktree and frigo's local metadata paths.

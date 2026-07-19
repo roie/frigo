@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"frigo/internal/registry"
+	"github.com/roie/frigo/internal/registry"
 )
 
 func (w *Workspace) loadRegistry(ctx context.Context) (registry.Registry, error) {

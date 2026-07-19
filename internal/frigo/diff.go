@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"frigo/internal/git"
+	"github.com/roie/frigo/internal/git"
 )
 
 func (w *Workspace) Diff(ctx context.Context, rawPaths []string) (string, error) {

@@ -7,12 +7,14 @@ import (
 	"os"
 	"sort"
 
-	gitpkg "frigo/internal/git"
-	"frigo/internal/repository"
-	"frigo/internal/frigo"
+	gitpkg "github.com/roie/frigo/internal/git"
+	"github.com/roie/frigo/internal/repository"
+	"github.com/roie/frigo/internal/frigo"
 )
 
 var minimumGitVersion = gitpkg.Version{Major: 2, Minor: 23, Patch: 0}
+
+var version = "dev"
 
 // Run executes the frigo command using the process working directory.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -43,6 +45,13 @@ func runAt(ctx context.Context, args []string, stdin io.Reader, stdout, stderr i
 			return 0
 		}
 		return printUsageError(stderr, &usageError{message: "--help does not accept arguments", general: true})
+	}
+	if args[0] == "--version" {
+		if len(args) == 1 {
+			fmt.Fprintf(stdout, "frigo %s\n", version)
+			return 0
+		}
+		return printUsageError(stderr, &usageError{message: "--version does not accept arguments", general: true})
 	}
 
 	parsed, usageErr := parseArgs(args)

@@ -9,9 +9,9 @@ import (
 	"sort"
 	"strings"
 
-	"frigo/internal/atomicfile"
-	"frigo/internal/registry"
-	"frigo/internal/repository"
+	"github.com/roie/frigo/internal/atomicfile"
+	"github.com/roie/frigo/internal/registry"
+	"github.com/roie/frigo/internal/repository"
 )
 
 const (
