@@ -43,6 +43,50 @@ func TestSyncPreservesContentOutsideManagedSection(t *testing.T) {
 	}
 }
 
+func TestSyncNonemptyThenEmptyRestoresExactOutsideBytes(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		original     string
+		syncedPrefix string
+	}{
+		{name: "with-terminal-newline", original: "keep one\n\nkeep two\n", syncedPrefix: "keep one\n\nkeep two\n# >>> frigo >>>\n"},
+		{name: "without-terminal-newline", original: "keep without terminal newline", syncedPrefix: "# >>> frigo >>>\n/PLAN.md\n# <<< frigo <<<\nkeep without terminal newline"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := testrepo.Init(t)
+			repo := discoverRepository(t, root)
+			if err := os.WriteFile(repo.ExcludePath, []byte(tt.original), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			owned := registry.Registry{Version: registry.CurrentVersion, Paths: []string{"PLAN.md"}}
+			for i := 0; i < 2; i++ {
+				if err := Sync(repo, owned); err != nil {
+					t.Fatal(err)
+				}
+				contents, err := os.ReadFile(repo.ExcludePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := string(contents); !strings.HasPrefix(got, tt.syncedPrefix) {
+					t.Fatalf("synced exclude = %q, want prefix %q", got, tt.syncedPrefix)
+				}
+			}
+			for i := 0; i < 2; i++ {
+				if err := Sync(repo, registry.New()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			contents, err := os.ReadFile(repo.ExcludePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := string(contents); got != tt.original {
+				t.Fatalf("exclude after repeated Sync = %q, want exact original %q", got, tt.original)
+			}
+		})
+	}
+}
+
 func TestSyncUnionsMainAndLinkedWorktreeRegistries(t *testing.T) {
 	root := testrepo.Init(t)
 	mainRepo := discoverRepository(t, root)

@@ -1,6 +1,7 @@
 package frigo
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -11,12 +12,63 @@ import (
 	"frigo/internal/registry"
 )
 
-func (w *Workspace) loadRegistry() (registry.Registry, error) {
+func (w *Workspace) loadRegistry(ctx context.Context) (registry.Registry, error) {
+	owned, err := w.loadRegistryFile()
+	if err != nil {
+		return registry.Registry{}, err
+	}
+	if err := w.validateHistory(ctx); err != nil {
+		return registry.Registry{}, err
+	}
+	return owned, nil
+}
+
+func (w *Workspace) loadSeparatedRegistry(ctx context.Context) (registry.Registry, error) {
+	owned, err := w.loadRegistryFile()
+	if err != nil {
+		return registry.Registry{}, err
+	}
+	if err := w.validateMainSeparation(ctx, owned.Paths); err != nil {
+		return registry.Registry{}, err
+	}
+	if err := w.validateHistory(ctx); err != nil {
+		return registry.Registry{}, err
+	}
+	return owned, nil
+}
+
+func (w *Workspace) loadRegistryFile() (registry.Registry, error) {
+	registryExists, err := pathExists(w.repo.RegistryPath)
+	if err != nil {
+		return registry.Registry{}, fmt.Errorf("inspect frigo registry: %w", err)
+	}
+	historyExists, err := pathExists(w.repo.HistoryDir)
+	if err != nil {
+		return registry.Registry{}, fmt.Errorf("inspect frigo history: %w", err)
+	}
+	if registryExists != historyExists {
+		return registry.Registry{}, fmt.Errorf("frigo metadata is incomplete: registry and history must exist together")
+	}
+	if !registryExists {
+		return registry.Registry{}, fmt.Errorf("frigo metadata is not initialized; use frigo add first")
+	}
+
 	owned, err := registry.Load(w.repo.RegistryPath)
 	if err != nil {
 		return registry.Registry{}, fmt.Errorf("load frigo registry: %w", err)
 	}
 	return owned, nil
+}
+
+func (w *Workspace) validateHistory(ctx context.Context) error {
+	bare, err := w.git.Output(ctx, "", "--git-dir="+w.repo.HistoryDir, "rev-parse", "--is-bare-repository")
+	if err != nil {
+		return fmt.Errorf("frigo history is not a valid bare Git repository: %w", err)
+	}
+	if !strings.EqualFold(bare, "true") {
+		return fmt.Errorf("frigo history is not bare")
+	}
+	return nil
 }
 
 func (w *Workspace) resolveScopedPaths(rawPaths []string, owned registry.Registry) ([]string, error) {
@@ -95,6 +147,9 @@ func (w *Workspace) normalizePath(raw string, requireExist bool) (string, error)
 	if relative == ".git" || strings.HasPrefix(relative, ".git/") {
 		return "", fmt.Errorf("Git metadata cannot be managed by frigo")
 	}
+	if err := w.rejectGitMetadataAlias(absolute); err != nil {
+		return "", err
+	}
 	if requireExist {
 		if _, err := os.Lstat(absolute); err != nil {
 			if os.IsNotExist(err) {
@@ -104,6 +159,59 @@ func (w *Workspace) normalizePath(raw string, requireExist bool) (string, error)
 		}
 	}
 	return relative, nil
+}
+
+func (w *Workspace) rejectGitMetadataAlias(absolute string) error {
+	metadataInfos, err := w.gitMetadataInfos()
+	if err != nil {
+		return err
+	}
+	for candidate := absolute; ; candidate = filepath.Dir(candidate) {
+		info, statErr := os.Stat(candidate)
+		switch {
+		case statErr == nil:
+			for _, metadataInfo := range metadataInfos {
+				if os.SameFile(info, metadataInfo) {
+					return fmt.Errorf("Git metadata cannot be managed by frigo")
+				}
+			}
+		case statErr != nil && !os.IsNotExist(statErr):
+			return fmt.Errorf("inspect %s: %w", candidate, statErr)
+		}
+		if candidate == w.repo.Root {
+			break
+		}
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			break
+		}
+	}
+	return nil
+}
+
+func (w *Workspace) gitMetadataInfos() ([]os.FileInfo, error) {
+	paths := []string{w.repo.GitDir, w.repo.CommonDir, filepath.Join(w.repo.Root, ".git")}
+	infos := make([]os.FileInfo, 0, len(paths))
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("inspect Git metadata: %w", err)
+		}
+		duplicate := false
+		for _, existing := range infos {
+			if os.SameFile(info, existing) {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			infos = append(infos, info)
+		}
+	}
+	return infos, nil
 }
 
 func (w *Workspace) intentPaths(paths []string) ([]string, error) {

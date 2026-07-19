@@ -8,7 +8,7 @@ import (
 )
 
 func (w *Workspace) Diff(ctx context.Context, rawPaths []string) (string, error) {
-	owned, err := w.loadRegistry()
+	owned, err := w.loadSeparatedRegistry(ctx)
 	if err != nil {
 		return "", err
 	}

@@ -32,7 +32,7 @@ func (w *Workspace) Commit(ctx context.Context, options CommitOptions) (CommitRe
 		return CommitResult{}, errors.New("no paths specified; use -a to commit all owned changes")
 	}
 
-	owned, err := w.loadRegistry()
+	owned, err := w.loadSeparatedRegistry(ctx)
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -47,6 +47,7 @@ func (w *Workspace) Commit(ctx context.Context, options CommitOptions) (CommitRe
 	}
 
 	var result CommitResult
+	var commit string
 	if err := w.withTemporaryIndex(ctx, intentPaths, func(client git.Client) error {
 		if len(paths) > 0 {
 			args := append([]string{"add", "--force", "--all", "--"}, paths...)
@@ -84,14 +85,11 @@ func (w *Workspace) Commit(ctx context.Context, options CommitOptions) (CommitRe
 		if err != nil {
 			return err
 		}
-		commit, err := w.privateOutput(ctx, commitClient, commitArgs...)
+		commit, err = w.privateOutput(ctx, commitClient, commitArgs...)
 		if err != nil {
 			return fmt.Errorf("create frigo commit: %w", err)
 		}
-		if _, err := w.privateOutput(ctx, client, "update-ref", "HEAD", commit); err != nil {
-			return fmt.Errorf("update frigo HEAD: %w", err)
-		}
-		shortCommit, err := w.privateOutput(ctx, client, "rev-parse", "--short", "HEAD")
+		shortCommit, err := w.privateOutput(ctx, client, "rev-parse", "--short", commit)
 		if err != nil {
 			return fmt.Errorf("read frigo commit: %w", err)
 		}
@@ -99,6 +97,11 @@ func (w *Workspace) Commit(ctx context.Context, options CommitOptions) (CommitRe
 		return nil
 	}); err != nil {
 		return CommitResult{}, err
+	}
+	if result.Committed {
+		if _, err := w.privateOutput(ctx, w.git, "update-ref", "HEAD", commit); err != nil {
+			return CommitResult{}, fmt.Errorf("update frigo HEAD: %w", err)
+		}
 	}
 	return result, nil
 }

@@ -25,12 +25,20 @@ func (c Client) executable() string {
 }
 
 func (c Client) command(ctx context.Context, dir string, args ...string) *exec.Cmd {
+	return c.commandWithLiteralPathspecs(ctx, dir, true, args...)
+}
+
+func (c Client) commandWithLiteralPathspecs(ctx context.Context, dir string, literal bool, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, c.executable(), args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
+	literalValue := "GIT_LITERAL_PATHSPECS=0"
+	if literal {
+		literalValue = "GIT_LITERAL_PATHSPECS=1"
+	}
 	cmd.Env = mergeEnvironment(os.Environ(), append(append([]string(nil), c.ExtraEnv...),
-		"GIT_LITERAL_PATHSPECS=1",
+		literalValue,
 		"LC_ALL=C",
 	)...)
 	return cmd
@@ -70,9 +78,24 @@ func mergeEnvironment(base []string, assignments ...string) []string {
 
 // Output runs Git and returns stdout with only one terminal newline removed.
 func (c Client) Output(ctx context.Context, dir string, args ...string) (string, error) {
+	return c.OutputWithInput(ctx, dir, "", args...)
+}
+
+// OutputWithInput runs Git with stdin and returns stdout with only one terminal newline removed.
+func (c Client) OutputWithInput(ctx context.Context, dir, input string, args ...string) (string, error) {
+	return c.outputWithInput(ctx, dir, input, true, args...)
+}
+
+// OutputWithInputNoLiteralPathspecs runs Git with stdin and literal pathspec mode disabled.
+func (c Client) OutputWithInputNoLiteralPathspecs(ctx context.Context, dir, input string, args ...string) (string, error) {
+	return c.outputWithInput(ctx, dir, input, false, args...)
+}
+
+func (c Client) outputWithInput(ctx context.Context, dir, input string, literalPathspecs bool, args ...string) (string, error) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd := c.command(ctx, dir, args...)
+	cmd := c.commandWithLiteralPathspecs(ctx, dir, literalPathspecs, args...)
+	cmd.Stdin = strings.NewReader(input)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

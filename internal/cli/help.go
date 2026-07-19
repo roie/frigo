@@ -7,20 +7,37 @@ import (
 )
 
 func printUsage(output io.Writer) {
-	fmt.Fprintln(output, `Usage:
-  frigo
+	fmt.Fprintln(output, `Usage: frigo <command> [options]
+Commands: add, release, status, list, diff, commit, log, restore, help
+Run 'frigo help' for detailed help.`)
+}
+
+func printHelp(output io.Writer) {
+	fmt.Fprintln(output, `frigo keeps selected paths in a separate local Git history.
+
+Usage:
   frigo add [--] <path>...
   frigo release [--force] [--] <path>...
   frigo status
-  frigo list
-  frigo ls
+  frigo list | frigo ls
   frigo diff [--] [<path>...]
   frigo commit -m <message> [--] <path>...
   frigo commit -a -m <message>
   frigo commit -am <message>
   frigo log
   frigo restore [--] <path>...
-  frigo help`)
+
+Commands:
+  add      Assign existing untracked paths to frigo.
+  release  Release exact ownership without deleting files or history.
+  status   Show main-repository and frigo working-tree status.
+  list     List exact ownership roots; ls is an alias.
+  diff     Show owned changes against frigo HEAD.
+  commit   Commit selected paths, or every owned change with -a.
+  log      Show frigo commit history.
+  restore  Restore saved owned paths from frigo HEAD.
+
+Use -- before paths beginning with '-'. frigo has no persistent staging area.`)
 }
 
 func printCommandUsage(output io.Writer, command string) {

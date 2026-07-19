@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"frigo/internal/git"
 	"frigo/internal/ignore"
 	"frigo/internal/registry"
 )
@@ -21,7 +22,7 @@ func (w *Workspace) Add(ctx context.Context, rawPaths []string) (registry.AddRes
 		return registry.AddResult{}, err
 	}
 
-	owned, created, err := w.loadForAdd()
+	owned, created, err := w.loadForAdd(ctx)
 	if err != nil {
 		return registry.AddResult{}, err
 	}
@@ -54,7 +55,7 @@ func (w *Workspace) Add(ctx context.Context, rawPaths []string) (registry.AddRes
 	return result, nil
 }
 
-func (w *Workspace) loadForAdd() (registry.Registry, bool, error) {
+func (w *Workspace) loadForAdd(ctx context.Context) (registry.Registry, bool, error) {
 	registryExists, err := pathExists(w.repo.RegistryPath)
 	if err != nil {
 		return registry.Registry{}, false, fmt.Errorf("inspect frigo registry: %w", err)
@@ -65,11 +66,8 @@ func (w *Workspace) loadForAdd() (registry.Registry, bool, error) {
 	}
 	switch {
 	case registryExists && historyExists:
-		owned, err := registry.Load(w.repo.RegistryPath)
-		if err != nil {
-			return registry.Registry{}, false, fmt.Errorf("load frigo registry: %w", err)
-		}
-		return owned, false, nil
+		owned, err := w.loadRegistry(ctx)
+		return owned, false, err
 	case registryExists != historyExists:
 		return registry.Registry{}, false, fmt.Errorf("frigo metadata is incomplete; refusing to create a new history")
 	default:
@@ -155,9 +153,12 @@ func (w *Workspace) rejectMainVisible(ctx context.Context, paths []string) error
 		return fmt.Errorf("inspect main Git exclusions: %w", err)
 	}
 	if output != "" {
-		return fmt.Errorf("these frigo paths are not ignored by the main repository:\n%s\na higher-precedence .gitignore rule may be re-including them", output)
+		return mainVisibleError(output)
 	}
 	for _, candidate := range paths {
+		if err := w.rejectRootMainVisible(ctx, candidate); err != nil {
+			return err
+		}
 		filename := filepath.Join(w.repo.Root, filepath.FromSlash(candidate))
 		info, statErr := os.Lstat(filename)
 		if statErr != nil {
@@ -181,10 +182,26 @@ func (w *Workspace) rejectMainVisible(ctx context.Context, paths []string) error
 			return fmt.Errorf("inspect main Git exclusions: %w", err)
 		}
 		if ignored == "" {
-			return fmt.Errorf("these frigo paths are not ignored by the main repository:\n%s\na higher-precedence .gitignore rule may be re-including them", candidate)
+			return mainVisibleError(candidate)
 		}
 	}
 	return nil
+}
+
+func (w *Workspace) rejectRootMainVisible(ctx context.Context, candidate string) error {
+	input := "./" + candidate + "\x00"
+	_, err := w.git.OutputWithInputNoLiteralPathspecs(ctx, "", input, "-C", w.repo.Root, "check-ignore", "--no-index", "--quiet", "-z", "--stdin")
+	if err == nil {
+		return nil
+	}
+	if code, ok := git.ExitCode(err); ok && code == 1 {
+		return mainVisibleError(candidate)
+	}
+	return fmt.Errorf("inspect main Git exclusions: %w", err)
+}
+
+func mainVisibleError(paths string) error {
+	return fmt.Errorf("these frigo paths are not ignored by the main repository:\n%s\na higher-precedence .gitignore rule may be re-including them", paths)
 }
 
 func pathExists(filename string) (bool, error) {

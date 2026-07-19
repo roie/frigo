@@ -96,31 +96,32 @@ func TestClientReportsExitCodeAndStderr(t *testing.T) {
 	}
 }
 
-func TestOutputTrimsOnlyOneTerminalNewline(t *testing.T) {
+func TestOutputRemovesExactlyOneTerminalLFOrCRLF(t *testing.T) {
 	t.Parallel()
 
-	path := writeExecutable(t, "git", "#!/bin/sh\nprintf 'value with space '\n")
-	client := Client{Path: path}
-	got, err := client.Output(context.Background(), "")
-	if err != nil {
-		t.Fatalf("Output() error = %v", err)
+	tests := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{name: "no newline", output: "value with space ", want: "value with space "},
+		{name: "one LF", output: "value with spaces  \n", want: "value with spaces  "},
+		{name: "double LF", output: "value\n\n", want: "value\n"},
+		{name: "one CRLF", output: "value with spaces  \r\n", want: "value with spaces  "},
+		{name: "double CRLF", output: "value\r\n\r\n", want: "value\r\n"},
 	}
-	if got != "value with space " {
-		t.Fatalf("Output() = %q, want %q", got, "value with space ")
-	}
-}
-
-func TestOutputPreservesSpacesAndStripsCRLF(t *testing.T) {
-	t.Parallel()
-
-	path := writeExecutable(t, "git", "#!/bin/sh\nprintf 'value with spaces  \r\n'")
-	client := Client{Path: path}
-	got, err := client.Output(context.Background(), "")
-	if err != nil {
-		t.Fatalf("Output() error = %v", err)
-	}
-	if got != "value with spaces  " {
-		t.Fatalf("Output() = %q, want %q", got, "value with spaces  ")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeExecutable(t, "git", "#!/bin/sh\nprintf '%s' \"$FRIGO_OUTPUT\"\n")
+			client := Client{Path: path}.WithEnv("FRIGO_OUTPUT=" + tt.output)
+			got, err := client.Output(context.Background(), "")
+			if err != nil {
+				t.Fatalf("Output() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("Output() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

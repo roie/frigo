@@ -40,7 +40,7 @@ This repository has no published module URL, so source builds are the supported 
 
 - `frigo` does not keep a persistent staging area. It uses temporary indexes during operations and removes them afterward.
 - A committed `.gitignore` rule outranks `.git/info/exclude`. A higher-priority ignore rule can re-include a path and make `frigo add` reject it.
-- Each linked worktree gets its own local frigo metadata and history. The main repository’s `.git/info/exclude` section is rebuilt from the union of active worktree manifests.
+- Each linked worktree gets its own local frigo metadata and history. The main repository’s `.git/info/exclude` section is rebuilt from the union of active worktree registries.
 - The history lives inside Git metadata. Deleting `.git` or a linked-worktree’s Git metadata deletes that history.
 - `git clean -fdx` can still remove ignored working files. Saved frigo versions can be restored; unsaved edits cannot.
 - History is local and unencrypted. Do not store secrets here.
@@ -51,4 +51,4 @@ This repository has no published module URL, so source builds are the supported 
 
 ## v1 limits
 
-No remotes, sync, external storage, hooks, daemon, TUI, automatic saves, or AI-specific adapters.
+No remotes, synchronization, hooks, daemon, TUI, partial-hunk commits, or destructive history commands.

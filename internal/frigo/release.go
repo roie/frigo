@@ -16,7 +16,7 @@ func (w *Workspace) Release(ctx context.Context, rawPaths []string, force bool) 
 		return registry.ReleaseResult{}, err
 	}
 
-	owned, err := w.loadRegistry()
+	owned, err := w.loadRegistry(ctx)
 	if err != nil {
 		return registry.ReleaseResult{}, err
 	}
@@ -59,20 +59,21 @@ func (w *Workspace) releaseDirtyPaths(ctx context.Context, paths []string) ([]st
 		return nil, err
 	}
 
-	var output string
+	dirty := make([]string, 0, len(paths))
 	if err := w.withTemporaryIndex(ctx, intentPaths, func(client git.Client) error {
-		args := append([]string{"status", "--porcelain", "--untracked-files=all", "--"}, paths...)
-		result, err := w.privateOutput(ctx, client, args...)
-		if err != nil {
-			return fmt.Errorf("inspect frigo changes: %w", err)
+		for _, candidate := range paths {
+			args := []string{"status", "--porcelain", "--untracked-files=all", "--", candidate}
+			output, err := w.privateOutput(ctx, client, args...)
+			if err != nil {
+				return fmt.Errorf("inspect frigo changes under %s: %w", candidate, err)
+			}
+			if output != "" {
+				dirty = append(dirty, candidate)
+			}
 		}
-		output = result
 		return nil
 	}); err != nil {
 		return nil, err
 	}
-	if output == "" {
-		return nil, nil
-	}
-	return append([]string(nil), paths...), nil
+	return dirty, nil
 }

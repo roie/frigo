@@ -49,7 +49,7 @@ func LiteralPattern(candidate string) (string, error) {
 func Sync(repo repository.Repository, owned registry.Registry) error {
 	paths, err := unionPaths(repo, owned)
 	if err != nil {
-		return err
+		return fmt.Errorf("collect frigo exclude paths: %w", err)
 	}
 
 	existing, err := os.ReadFile(repo.ExcludePath)
@@ -144,10 +144,18 @@ func rewrite(existing []byte, paths []string) ([]byte, error) {
 		return block, nil
 	}
 
-	out := make([]byte, 0, len(existing)+2+len(block))
-	out = append(out, existing...)
-	out = append(out, '\n', '\n')
+	out := make([]byte, 0, len(existing)+len(block))
+	if existing[len(existing)-1] == '\n' {
+		out = append(out, existing...)
+		out = append(out, block...)
+		return out, nil
+	}
+	// There is no byte sequence that both appends a new line-oriented section
+	// after a non-newline-terminated file and restores the prior bytes exactly
+	// when the managed section is later removed. Put the managed section first so
+	// every user byte remains outside the section unchanged.
 	out = append(out, block...)
+	out = append(out, existing...)
 	return out, nil
 }
 
@@ -163,7 +171,7 @@ func buildBlock(paths []string) ([]byte, error) {
 	for _, candidate := range paths {
 		pattern, err := LiteralPattern(candidate)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("build literal pattern for %s: %w", candidate, err)
 		}
 		builder.WriteString(pattern)
 		builder.WriteByte('\n')

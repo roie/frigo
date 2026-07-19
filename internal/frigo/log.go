@@ -6,7 +6,7 @@ import (
 )
 
 func (w *Workspace) Log(ctx context.Context) (string, error) {
-	if _, err := w.loadRegistry(); err != nil {
+	if _, err := w.loadRegistry(ctx); err != nil {
 		return "", err
 	}
 	hasHead, err := w.hasHead(ctx)

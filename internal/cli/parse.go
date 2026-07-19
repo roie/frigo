@@ -104,10 +104,29 @@ func parseCommitArgs(args []string) (parsedCommand, *usageError) {
 
 func expandCommitArgs(args []string) []string {
 	expanded := make([]string, 0, len(args)+1)
+	options := true
+	expectMessage := false
 	for _, arg := range args {
-		if arg == "-am" {
-			expanded = append(expanded, "-a", "-m")
+		if expectMessage {
+			expanded = append(expanded, arg)
+			expectMessage = false
 			continue
+		}
+		if options {
+			switch arg {
+			case "--":
+				options = false
+			case "-m":
+				expectMessage = true
+			case "-am":
+				expanded = append(expanded, "-a", "-m")
+				expectMessage = true
+				continue
+			default:
+				if len(arg) == 0 || arg[0] != '-' {
+					options = false
+				}
+			}
 		}
 		expanded = append(expanded, arg)
 	}

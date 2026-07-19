@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -11,7 +12,34 @@ import (
 	"frigo/internal/testrepo"
 )
 
-const wantUsage = "Usage:\n  frigo\n  frigo add [--] <path>...\n  frigo release [--force] [--] <path>...\n  frigo status\n  frigo list\n  frigo ls\n  frigo diff [--] [<path>...]\n  frigo commit -m <message> [--] <path>...\n  frigo commit -a -m <message>\n  frigo commit -am <message>\n  frigo log\n  frigo restore [--] <path>...\n  frigo help\n"
+const wantUsage = "Usage: frigo <command> [options]\nCommands: add, release, status, list, diff, commit, log, restore, help\nRun 'frigo help' for detailed help.\n"
+
+const wantHelp = `frigo keeps selected paths in a separate local Git history.
+
+Usage:
+  frigo add [--] <path>...
+  frigo release [--force] [--] <path>...
+  frigo status
+  frigo list | frigo ls
+  frigo diff [--] [<path>...]
+  frigo commit -m <message> [--] <path>...
+  frigo commit -a -m <message>
+  frigo commit -am <message>
+  frigo log
+  frigo restore [--] <path>...
+
+Commands:
+  add      Assign existing untracked paths to frigo.
+  release  Release exact ownership without deleting files or history.
+  status   Show main-repository and frigo working-tree status.
+  list     List exact ownership roots; ls is an alias.
+  diff     Show owned changes against frigo HEAD.
+  commit   Commit selected paths, or every owned change with -a.
+  log      Show frigo commit history.
+  restore  Restore saved owned paths from frigo HEAD.
+
+Use -- before paths beginning with '-'. frigo has no persistent staging area.
+`
 
 var cwdMu sync.Mutex
 
@@ -21,18 +49,18 @@ type result struct {
 	code   int
 }
 
-func TestBareUsageAndHelpDoNotRequireRepository(t *testing.T) {
-	for _, args := range [][]string{
-		nil,
-		{"help"},
-		{"--help"},
-	} {
+func TestBareUsageAndDetailedHelpDoNotRequireRepository(t *testing.T) {
+	bare := invoke(t, t.TempDir())
+	if bare.code != 0 || bare.stderr != "" || bare.stdout != wantUsage {
+		t.Fatalf("bare result=%+v, want stdout %q", bare, wantUsage)
+	}
+	for _, args := range [][]string{{"help"}, {"--help"}} {
 		got := invoke(t, t.TempDir(), args...)
 		if got.code != 0 || got.stderr != "" {
 			t.Fatalf("args=%v result=%+v", args, got)
 		}
-		if got.stdout != wantUsage {
-			t.Fatalf("args=%v stdout:\n%q\nwant:\n%q", args, got.stdout, wantUsage)
+		if got.stdout != wantHelp {
+			t.Fatalf("args=%v stdout:\n%q\nwant:\n%q", args, got.stdout, wantHelp)
 		}
 	}
 }
@@ -128,6 +156,82 @@ func TestPathlessCommitSuggestsAll(t *testing.T) {
 	}
 	if strings.Count(got.stderr, "frigo:") != 1 {
 		t.Fatalf("stderr has repeated prefix: %q", got.stderr)
+	}
+}
+
+func TestCommitCombinedFlagExpansionRespectsMessageAndPathValues(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want parsedCommand
+	}{
+		{
+			name: "message equal to combined flag",
+			args: []string{"commit", "-m", "-am", "PLAN.md"},
+			want: parsedCommand{name: "commit", message: "-am", paths: []string{"PLAN.md"}},
+		},
+		{
+			name: "path equal to combined flag after separator",
+			args: []string{"commit", "-m", "checkpoint", "--", "-am"},
+			want: parsedCommand{name: "commit", message: "checkpoint", paths: []string{"-am"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, usageErr := parseArgs(tt.args)
+			if usageErr != nil {
+				t.Fatalf("parseArgs() usage error = %v", usageErr)
+			}
+			if got.name != tt.want.name || got.message != tt.want.message || got.all != tt.want.all || !slices.Equal(got.paths, tt.want.paths) {
+				t.Fatalf("parseArgs() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCLICommitAcceptsCombinedFlagAsMessageAndPathValue(t *testing.T) {
+	t.Run("message", func(t *testing.T) {
+		root := testrepo.Init(t)
+		testrepo.Write(t, root, "README.md", "main\n")
+		testrepo.CommitAll(t, root, "initial", "README.md")
+		testrepo.Write(t, root, "PLAN.md", "plan\n")
+		if got := invoke(t, root, "add", "PLAN.md"); got.code != 0 {
+			t.Fatal(got.stderr)
+		}
+		if got := invoke(t, root, "commit", "-m", "-am", "PLAN.md"); got.code != 0 {
+			t.Fatalf("commit: %+v", got)
+		}
+	})
+
+	t.Run("path after separator", func(t *testing.T) {
+		root := testrepo.Init(t)
+		testrepo.Write(t, root, "README.md", "main\n")
+		testrepo.CommitAll(t, root, "initial", "README.md")
+		testrepo.Write(t, root, "-am", "plan\n")
+		if got := invoke(t, root, "add", "--", "-am"); got.code != 0 {
+			t.Fatal(got.stderr)
+		}
+		if got := invoke(t, root, "commit", "-m", "checkpoint", "--", "-am"); got.code != 0 {
+			t.Fatalf("commit: %+v", got)
+		}
+		if got := privateTree(t, root); got == "" {
+			t.Fatal("private tree is empty")
+		}
+	})
+}
+
+func TestAddPrintsNormalizedAlreadyOwnedPath(t *testing.T) {
+	root := testrepo.Init(t)
+	testrepo.Write(t, root, "README.md", "main\n")
+	testrepo.CommitAll(t, root, "initial", "README.md")
+	testrepo.Write(t, root, "PLAN.md", "plan\n")
+	if got := invoke(t, root, "add", "PLAN.md"); got.code != 0 {
+		t.Fatal(got.stderr)
+	}
+
+	got := invoke(t, root, "add", "./PLAN.md")
+	if got.code != 0 || got.stderr != "" || got.stdout != "already owned PLAN.md\n" {
+		t.Fatalf("second add: %+v", got)
 	}
 }
 
@@ -231,7 +335,7 @@ func invoke(t *testing.T, root string, args ...string) result {
 	}
 	defer func() {
 		if err := os.Chdir(cwd); err != nil {
-			panic(err)
+			t.Fatalf("restore working directory: %v", err)
 		}
 	}()
 

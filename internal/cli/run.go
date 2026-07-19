@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 
 	gitpkg "frigo/internal/git"
 	"frigo/internal/repository"
@@ -31,14 +32,14 @@ func runAt(ctx context.Context, args []string, stdin io.Reader, stdout, stderr i
 	}
 	if args[0] == "help" {
 		if len(args) == 1 {
-			printUsage(stdout)
+			printHelp(stdout)
 			return 0
 		}
 		return printUsageError(stderr, &usageError{message: "help does not accept arguments", general: true})
 	}
 	if args[0] == "--help" {
 		if len(args) == 1 {
-			printUsage(stdout)
+			printHelp(stdout)
 			return 0
 		}
 		return printUsageError(stderr, &usageError{message: "--help does not accept arguments", general: true})
@@ -67,13 +68,17 @@ func runAt(ctx context.Context, args []string, stdin io.Reader, stdout, stderr i
 		for _, path := range result.Added {
 			fmt.Fprintf(stdout, "added %s\n", path)
 		}
-		for _, path := range parsed.paths {
-			if covering, ok := result.AlreadyOwned[path]; ok {
-				if covering == path {
-					fmt.Fprintf(stdout, "already owned %s\n", path)
-				} else {
-					fmt.Fprintf(stdout, "already owned %s via %s\n", path, covering)
-				}
+		alreadyOwned := make([]string, 0, len(result.AlreadyOwned))
+		for path := range result.AlreadyOwned {
+			alreadyOwned = append(alreadyOwned, path)
+		}
+		sort.Strings(alreadyOwned)
+		for _, path := range alreadyOwned {
+			covering := result.AlreadyOwned[path]
+			if covering == path {
+				fmt.Fprintf(stdout, "already owned %s\n", path)
+			} else {
+				fmt.Fprintf(stdout, "already owned %s via %s\n", path, covering)
 			}
 		}
 	case "release":

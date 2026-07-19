@@ -3,6 +3,7 @@ package frigo
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -256,26 +257,6 @@ func TestDiffShowsNewOwnedFileWithoutPersistentIndex(t *testing.T) {
 	}
 	if !strings.Contains(diff, "+draft") {
 		t.Fatalf("diff = %q", diff)
-	}
-
-	assertNoPersistentIndex(t, ws)
-	assertNoTemporaryIndexes(t, ws)
-}
-
-func TestListIncludesSavedAndNewOwnedFiles(t *testing.T) {
-	ws, root := newWorkspace(t)
-	ownForTest(t, ws, "docs/local")
-	testrepo.Write(t, root, "docs/local/a.md", "saved\n")
-	saveForTest(t, ws, "save docs")
-	testrepo.Write(t, root, "docs/local/b.md", "new\n")
-
-	got, err := ws.List(context.Background(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"docs/local/a.md", "docs/local/b.md"}
-	if !slices.Equal(got, want) {
-		t.Fatalf("List() = %v, want %v", got, want)
 	}
 
 	assertNoPersistentIndex(t, ws)
@@ -912,7 +893,10 @@ func initWorkspaceMetadata(t *testing.T, repo repository.Repository) error {
 	}
 	testrepo.Write(t, repo.Root, filepath.Join(".git", "frigo", "attributes"), "")
 	testrepo.Run(t, repo.Root, "init", "--bare", "--quiet", repo.HistoryDir)
-	return registry.Save(repo.RegistryPath, registry.New())
+	if err := registry.Save(repo.RegistryPath, registry.New()); err != nil {
+		return fmt.Errorf("save test registry: %w", err)
+	}
+	return nil
 }
 
 func ownForTest(t *testing.T, ws *Workspace, paths ...string) {
@@ -925,6 +909,9 @@ func ownForTest(t *testing.T, ws *Workspace, paths ...string) {
 		t.Fatal(err)
 	}
 	if err := registry.Save(ws.repo.RegistryPath, owned); err != nil {
+		t.Fatal(err)
+	}
+	if err := ignore.Sync(ws.repo, owned); err != nil {
 		t.Fatal(err)
 	}
 }

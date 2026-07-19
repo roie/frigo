@@ -2,6 +2,7 @@ package frigo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -14,14 +15,16 @@ var (
 	removeTemporaryIndex = os.Remove
 )
 
-func (w *Workspace) withTemporaryIndex(ctx context.Context, intentPaths []string, fn func(client git.Client) error) error {
+func (w *Workspace) withTemporaryIndex(ctx context.Context, intentPaths []string, fn func(client git.Client) error) (returnErr error) {
 	file, err := createTemporaryIndex(w.repo.FrigoDir, "temporary-index-*")
 	if err != nil {
 		return fmt.Errorf("allocate temporary index: %w", err)
 	}
 	name := file.Name()
 	defer func() {
-		_ = removeTemporaryIndex(name)
+		if err := removeTemporaryIndex(name); err != nil && !os.IsNotExist(err) {
+			returnErr = errors.Join(returnErr, fmt.Errorf("remove temporary index: %w", err))
+		}
 	}()
 
 	if err := closeTemporaryIndex(file); err != nil {

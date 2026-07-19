@@ -8,7 +8,7 @@ import (
 )
 
 func (w *Workspace) Restore(ctx context.Context, rawPaths []string) ([]string, error) {
-	owned, err := w.loadRegistry()
+	owned, err := w.loadSeparatedRegistry(ctx)
 	if err != nil {
 		return nil, err
 	}
