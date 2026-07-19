@@ -87,7 +87,7 @@ jobs:
           {
             "name": "frigo",
             "version": "${version}",
-            "description": "Lightweight path ownership for Git workspaces.",
+            "description": "Keep local project files without adding them to your main Git history.",
             "bin": {
               "frigo": "bin/frigo.js"
             },
@@ -175,7 +175,6 @@ jobs:
 
       - name: Publish npm package
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           TARBALL: ${{ steps.pack.outputs.tarball }}
         run: npm publish "$TARBALL" --access public
 
