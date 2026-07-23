@@ -3,16 +3,19 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 
+	gitpkg "github.com/roie/frigo/internal/git"
 	"github.com/roie/frigo/internal/testrepo"
 )
 
-const wantUsage = "Usage: frigo <command> [options]\nCommands: add, release, status, list, diff, commit, log, restore, help\nRun 'frigo help' for detailed help.\n"
+const wantUsage = "Usage: frigo <command> [options]\nCommands: add, release, status, list, diff, commit, log, restore, doctor, help\nRun 'frigo help' for detailed help.\n"
 
 const wantHelp = `frigo keeps local project files without adding them to your main Git history.
 
@@ -27,6 +30,7 @@ Usage:
   frigo commit -am <message>
   frigo log
   frigo restore [--] <path>...
+  frigo doctor [--repair]
 
 Commands:
   add      Assign existing untracked paths to frigo.
@@ -37,6 +41,7 @@ Commands:
   commit   Commit selected paths, or every owned change with -a.
   log      Show frigo commit history.
   restore  Restore saved owned paths from frigo HEAD.
+  doctor   Diagnose metadata, or apply bounded repairs with --repair.
 
 Use -- before paths beginning with '-'. frigo has no persistent staging area.
 `
@@ -47,6 +52,12 @@ type result struct {
 	stdout string
 	stderr string
 	code   int
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("injected output failure")
 }
 
 func TestBareUsageAndDetailedHelpDoNotRequireRepository(t *testing.T) {
@@ -107,6 +118,68 @@ func TestUnknownCommandReturnsUsageError(t *testing.T) {
 	}
 	if strings.Count(got.stderr, "frigo:") != 1 {
 		t.Fatalf("stderr has repeated prefix: %q", got.stderr)
+	}
+}
+
+func TestDoctorCLIUsesDeterministicExitCodesAndPrintsPlanBeforeApply(t *testing.T) {
+	root := testrepo.Init(t)
+	testrepo.Write(t, root, "README.md", "main\n")
+	testrepo.CommitAll(t, root, "initial", "README.md")
+	testrepo.Write(t, root, "private.txt", "private\n")
+	if added := invoke(t, root, "add", "private.txt"); added.code != 0 {
+		t.Fatalf("add result = %+v", added)
+	}
+
+	healthy := invoke(t, root, "doctor")
+	if healthy.code != 0 || healthy.stderr != "" || healthy.stdout != "ok\n" {
+		t.Fatalf("healthy doctor result = %+v", healthy)
+	}
+
+	attributes := filepath.Join(root, ".git", "frigo", "history.git", "info", "attributes")
+	if err := os.Remove(attributes); err != nil {
+		t.Fatal(err)
+	}
+	unhealthy := invoke(t, root, "doctor")
+	if unhealthy.code != 1 || unhealthy.stderr != "" || !strings.Contains(unhealthy.stdout, "issue attributes-private ") {
+		t.Fatalf("unhealthy doctor result = %+v", unhealthy)
+	}
+
+	repaired := invoke(t, root, "doctor", "--repair")
+	if repaired.code != 0 || repaired.stderr != "" {
+		t.Fatalf("repair doctor result = %+v", repaired)
+	}
+	planAt := strings.Index(repaired.stdout, "plan attributes-private ")
+	appliedAt := strings.Index(repaired.stdout, "applied attributes-private ")
+	if planAt < 0 || appliedAt < 0 || planAt >= appliedAt || !strings.HasSuffix(repaired.stdout, "ok\n") {
+		t.Fatalf("repair output does not print plan before apply:\n%s", repaired.stdout)
+	}
+
+	usage := invoke(t, root, "doctor", "unexpected")
+	if usage.code != 2 || !strings.Contains(usage.stderr, "Usage: frigo doctor [--repair]") {
+		t.Fatalf("doctor usage result = %+v", usage)
+	}
+}
+
+func TestDoctorRepairDoesNotMutateWhenCompletePlanCannotBePrinted(t *testing.T) {
+	root := testrepo.Init(t)
+	testrepo.Write(t, root, "README.md", "main\n")
+	testrepo.CommitAll(t, root, "initial", "README.md")
+	testrepo.Write(t, root, "private.txt", "private\n")
+	if added := invoke(t, root, "add", "private.txt"); added.code != 0 {
+		t.Fatalf("add result = %+v", added)
+	}
+	attributes := filepath.Join(root, ".git", "frigo", "history.git", "info", "attributes")
+	if err := os.Remove(attributes); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	code := runAt(context.Background(), []string{"doctor", "--repair"}, bytes.NewReader(nil), failingWriter{}, &stderr, root, gitpkg.Client{Path: "git"})
+	if code != 1 || !strings.Contains(stderr.String(), "injected output failure") {
+		t.Fatalf("doctor result code=%d stderr=%q", code, stderr.String())
+	}
+	if _, err := os.Lstat(attributes); !os.IsNotExist(err) {
+		t.Fatalf("attributes mutated after plan output failure, err=%v", err)
 	}
 }
 

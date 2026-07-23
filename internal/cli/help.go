@@ -8,7 +8,7 @@ import (
 
 func printUsage(output io.Writer) {
 	fmt.Fprintln(output, `Usage: frigo <command> [options]
-Commands: add, release, status, list, diff, commit, log, restore, help
+Commands: add, release, status, list, diff, commit, log, restore, doctor, help
 Run 'frigo help' for detailed help.`)
 }
 
@@ -26,6 +26,7 @@ Usage:
   frigo commit -am <message>
   frigo log
   frigo restore [--] <path>...
+  frigo doctor [--repair]
 
 Commands:
   add      Assign existing untracked paths to frigo.
@@ -36,6 +37,7 @@ Commands:
   commit   Commit selected paths, or every owned change with -a.
   log      Show frigo commit history.
   restore  Restore saved owned paths from frigo HEAD.
+  doctor   Diagnose metadata, or apply bounded repairs with --repair.
 
 Use -- before paths beginning with '-'. frigo has no persistent staging area.`)
 }
@@ -63,6 +65,8 @@ func printCommandUsage(output io.Writer, command string) {
 		fmt.Fprintln(output, "Usage: frigo log")
 	case "restore":
 		fmt.Fprintln(output, "Usage: frigo restore [--] <path>...")
+	case "doctor":
+		fmt.Fprintln(output, "Usage: frigo doctor [--repair]")
 	}
 }
 

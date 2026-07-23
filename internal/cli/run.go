@@ -164,6 +164,29 @@ func runAt(ctx context.Context, args []string, stdin io.Reader, stdout, stderr i
 		for _, path := range paths {
 			fmt.Fprintf(stdout, "restored %s\n", path)
 		}
+	case "doctor":
+		result, err := workspace.DoctorWithPlan(ctx, frigo.DoctorOptions{Repair: parsed.repair}, func(actions []frigo.DoctorAction) error {
+			for _, action := range actions {
+				if _, err := fmt.Fprintf(stdout, "plan %s %q: %s\n", action.Code, action.Path, action.Description); err != nil {
+					return fmt.Errorf("print complete doctor repair plan: %w", err)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return printError(stderr, err)
+		}
+		for _, action := range result.Applied {
+			fmt.Fprintf(stdout, "applied %s %q: %s\n", action.Code, action.Path, action.Description)
+		}
+		if len(result.Issues) == 0 {
+			fmt.Fprintln(stdout, "ok")
+			return 0
+		}
+		for _, issue := range result.Issues {
+			fmt.Fprintf(stdout, "issue %s %q: %s\n", issue.Code, issue.Path, issue.Message)
+		}
+		return 1
 	}
 	return 0
 }

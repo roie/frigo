@@ -12,6 +12,7 @@ type parsedCommand struct {
 	message string
 	all     bool
 	force   bool
+	repair  bool
 }
 
 type usageError struct {
@@ -29,6 +30,8 @@ func parseArgs(args []string) (parsedCommand, *usageError) {
 		return parseReleaseArgs(args[1:])
 	case "status", "list", "ls", "log":
 		return parseNoArgCommand(command, args[1:])
+	case "doctor":
+		return parseDoctorArgs(args[1:])
 	case "diff":
 		return parsePathCommand(command, args[1:], false)
 	case "commit":
@@ -64,6 +67,19 @@ func parseNoArgCommand(command string, args []string) (parsedCommand, *usageErro
 		return parsedCommand{}, usageFor(command, fmt.Sprintf("%s does not accept arguments", command))
 	}
 	return parsedCommand{name: command}, nil
+}
+
+func parseDoctorArgs(args []string) (parsedCommand, *usageError) {
+	set := newFlagSet("doctor")
+	var repair bool
+	set.BoolVar(&repair, "repair", false, "")
+	if err := set.Parse(args); err != nil {
+		return parsedCommand{}, usageFor("doctor", err.Error())
+	}
+	if len(set.Args()) != 0 {
+		return parsedCommand{}, usageFor("doctor", "doctor does not accept arguments")
+	}
+	return parsedCommand{name: "doctor", repair: repair}, nil
 }
 
 func parseReleaseArgs(args []string) (parsedCommand, *usageError) {

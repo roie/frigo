@@ -52,6 +52,33 @@ func LiteralPattern(candidate string) (string, error) {
 	return builder.String(), nil
 }
 
+// Check reports whether frigo's managed section in the common info/exclude
+// file exactly matches the live registry union without changing the file.
+func Check(repo repository.Repository, owned registry.Registry) (bool, error) {
+	paths, err := unionPaths(repo, owned)
+	if err != nil {
+		return false, fmt.Errorf("collect frigo exclude paths: %w", err)
+	}
+
+	info, err := os.Lstat(repo.ExcludePath)
+	if err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("inspect Git exclude file: %w", err)
+	}
+	if err == nil && (info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular()) {
+		return false, fmt.Errorf("Git exclude file %s is not a regular file", repo.ExcludePath)
+	}
+
+	existing, err := os.ReadFile(repo.ExcludePath)
+	if err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("read Git exclude file: %w", err)
+	}
+	output, err := rewrite(existing, paths)
+	if err != nil {
+		return false, err
+	}
+	return bytes.Equal(existing, output), nil
+}
+
 // Sync rewrites frigo's managed section in the common info/exclude file.
 func Sync(repo repository.Repository, owned registry.Registry) error {
 	if err := testsync.Fail("exclude-sync"); err != nil {
