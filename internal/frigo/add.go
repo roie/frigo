@@ -2,6 +2,7 @@ package frigo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,6 +26,9 @@ func (w *Workspace) Add(ctx context.Context, rawPaths []string) (registry.AddRes
 }
 
 func (w *Workspace) addLocked(ctx context.Context, rawPaths []string) (registry.AddResult, error) {
+	if err := w.ensureLayout(ctx, true); err != nil {
+		return registry.AddResult{}, err
+	}
 	paths, err := w.normalizePaths(rawPaths, true)
 	if err != nil {
 		return registry.AddResult{}, err
@@ -46,11 +50,37 @@ func (w *Workspace) addLocked(ctx context.Context, rawPaths []string) (registry.
 		return registry.AddResult{}, err
 	}
 
+	deactivateProtection := w.repo.LinkedWorktree && len(original.Paths) == 0 && len(owned.Paths) > 0
+	protectionActive := false
 	rollback := func(cause error) (registry.AddResult, error) {
-		if rollbackErr := w.rollbackAdd(original, created); rollbackErr != nil {
-			return registry.AddResult{}, fmt.Errorf("%v; rollback failed: %w", cause, rollbackErr)
+		rollbackErr := w.rollbackAdd(original, created)
+		var protectionErr error
+		if rollbackErr == nil && deactivateProtection && protectionActive {
+			protectionErr = w.releaseOwnedWorktreeLock(ctx)
 		}
-		return registry.AddResult{}, cause
+		return registry.AddResult{}, errors.Join(
+			cause,
+			wrapOptional("rollback add", rollbackErr),
+			wrapOptional("rollback linked worktree protection", protectionErr),
+		)
+	}
+	if created {
+		if err := w.initialize(ctx); err != nil {
+			return rollback(err)
+		}
+	}
+	if w.repo.LinkedWorktree && len(owned.Paths) > 0 {
+		id, exists, err := loadManagedPointer(w.repo.WorktreeIDPath)
+		if err != nil {
+			return rollback(fmt.Errorf("load linked frigo pointer before protection: %w", err))
+		}
+		if !exists {
+			return rollback(fmt.Errorf("linked frigo pointer is missing before registry activation"))
+		}
+		if _, err := w.ensureWorktreeProtection(ctx, id); err != nil {
+			return rollback(err)
+		}
+		protectionActive = true
 	}
 	if err := saveRegistry(w.repo.RegistryPath, owned); err != nil {
 		return rollback(fmt.Errorf("save frigo registry: %w", err))
@@ -60,11 +90,6 @@ func (w *Workspace) addLocked(ctx context.Context, rawPaths []string) (registry.
 	}
 	if err := w.validateMainSeparation(ctx, owned.Paths); err != nil {
 		return rollback(err)
-	}
-	if created {
-		if err := w.initialize(ctx); err != nil {
-			return rollback(err)
-		}
 	}
 	return result, nil
 }
@@ -78,11 +103,28 @@ func (w *Workspace) loadForAdd(ctx context.Context) (registry.Registry, bool, er
 	if err != nil {
 		return registry.Registry{}, false, fmt.Errorf("inspect frigo history: %w", err)
 	}
+	if registryExists {
+		if err := requireManagedRegularFile(w.repo.RegistryPath); err != nil {
+			return registry.Registry{}, false, fmt.Errorf("inspect frigo registry: %w", err)
+		}
+	}
+	if historyExists {
+		if err := requireManagedDirectory(w.repo.HistoryDir); err != nil {
+			return registry.Registry{}, false, fmt.Errorf("inspect frigo history: %w", err)
+		}
+	}
 	switch {
 	case registryExists && historyExists:
 		owned, err := w.loadRegistry(ctx)
 		return owned, false, err
-	case registryExists != historyExists:
+	case registryExists:
+		return registry.Registry{}, false, fmt.Errorf("frigo metadata is incomplete; refusing to create a new history")
+	case historyExists && w.repo.LinkedWorktree:
+		if err := w.validateInitializedHistory(ctx); err != nil {
+			return registry.Registry{}, false, err
+		}
+		return registry.New(), true, nil
+	case historyExists:
 		return registry.Registry{}, false, fmt.Errorf("frigo metadata is incomplete; refusing to create a new history")
 	default:
 		frigoExists, err := pathExists(w.repo.FrigoDir)
@@ -90,6 +132,15 @@ func (w *Workspace) loadForAdd(ctx context.Context) (registry.Registry, bool, er
 			return registry.Registry{}, false, fmt.Errorf("inspect frigo metadata: %w", err)
 		}
 		if frigoExists {
+			if !w.repo.LinkedWorktree {
+				linkedStoresOnly, err := w.mainStoreContainsOnlyLinkedStores()
+				if err != nil {
+					return registry.Registry{}, false, err
+				}
+				if linkedStoresOnly {
+					return registry.New(), true, nil
+				}
+			}
 			return registry.Registry{}, false, fmt.Errorf("frigo metadata is incomplete; refusing to create a new history")
 		}
 		return registry.New(), true, nil
@@ -98,44 +149,40 @@ func (w *Workspace) loadForAdd(ctx context.Context) (registry.Registry, bool, er
 
 func (w *Workspace) rollbackAdd(original registry.Registry, created bool) error {
 	if created {
-		if err := os.RemoveAll(w.repo.FrigoDir); err != nil {
-			return fmt.Errorf("remove new frigo metadata: %w", err)
+		if w.repo.LinkedWorktree {
+			if err := os.Remove(w.repo.RegistryPath); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove new linked registry: %w", err)
+			}
+			return ignore.Sync(w.repo, registry.New())
 		}
-		return ignore.Sync(w.repo, registry.New())
+		linkedStoresExist, inspectErr := pathExists(w.repo.LinkedStoresDir)
+		if inspectErr != nil {
+			return fmt.Errorf("inspect linked stores during main rollback: %w", inspectErr)
+		}
+		if !linkedStoresExist {
+			if err := os.RemoveAll(w.repo.FrigoDir); err != nil {
+				return fmt.Errorf("remove new frigo metadata: %w", err)
+			}
+			return ignore.Sync(w.repo, registry.New())
+		}
+		var rollbackErr error
+		for _, path := range []string{w.repo.RegistryPath, w.repo.AttributesPath} {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				rollbackErr = errors.Join(rollbackErr, fmt.Errorf("remove %s: %w", path, err))
+			}
+		}
+		for _, path := range []string{w.repo.HistoryDir, w.repo.HooksDir} {
+			if err := os.RemoveAll(path); err != nil {
+				rollbackErr = errors.Join(rollbackErr, fmt.Errorf("remove %s: %w", path, err))
+			}
+		}
+		rollbackErr = errors.Join(rollbackErr, ignore.Sync(w.repo, registry.New()))
+		return rollbackErr
 	}
 	if err := registry.Save(w.repo.RegistryPath, original); err != nil {
 		return fmt.Errorf("restore frigo registry: %w", err)
 	}
 	return ignore.Sync(w.repo, original)
-}
-
-func (w *Workspace) initialize(ctx context.Context) error {
-	if err := os.MkdirAll(w.repo.FrigoDir, 0o700); err != nil {
-		return fmt.Errorf("create frigo metadata directory: %w", err)
-	}
-	if err := os.MkdirAll(w.repo.HooksDir, 0o700); err != nil {
-		return fmt.Errorf("create empty frigo hooks directory: %w", err)
-	}
-	if err := os.WriteFile(w.repo.AttributesPath, nil, 0o600); err != nil {
-		return fmt.Errorf("create empty frigo attributes file: %w", err)
-	}
-	if _, err := w.git.Output(ctx, "", "init", "--bare", "--quiet", w.repo.HistoryDir); err != nil {
-		return fmt.Errorf("initialize frigo history: %w", err)
-	}
-	if err := w.ensurePrivateAttributes(); err != nil {
-		return fmt.Errorf("initialize frigo private attributes: %w", err)
-	}
-	for _, config := range [][2]string{
-		{"core.hooksPath", w.repo.HooksDir},
-		{"core.attributesFile", w.repo.AttributesPath},
-		{"core.autocrlf", "false"},
-		{"commit.gpgSign", "false"},
-	} {
-		if _, err := w.privateOutput(ctx, w.git.WithEnv("GIT_ATTR_NOSYSTEM=1"), "config", config[0], config[1]); err != nil {
-			return fmt.Errorf("configure frigo history: %w", err)
-		}
-	}
-	return nil
 }
 
 func (w *Workspace) validateMainSeparation(ctx context.Context, paths []string) error {
@@ -222,7 +269,7 @@ func mainVisibleError(paths string) error {
 }
 
 func pathExists(filename string) (bool, error) {
-	_, err := os.Stat(filename)
+	_, err := os.Lstat(filename)
 	if err == nil {
 		return true, nil
 	}

@@ -22,7 +22,7 @@ func TestDiscoverUsesFrigoHistoryNames(t *testing.T) {
 	if repo.CommonFrigoDir != filepath.Join(wantGitDir, "frigo") {
 		t.Fatalf("CommonFrigoDir = %q", repo.CommonFrigoDir)
 	}
-	if repo.LinkedStoresDir != filepath.Join(wantGitDir, "worktrees") {
+	if repo.LinkedStoresDir != filepath.Join(wantGitDir, "frigo", "worktrees") {
 		t.Fatalf("LinkedStoresDir = %q", repo.LinkedStoresDir)
 	}
 	if repo.WorktreeIDPath != filepath.Join(wantGitDir, "frigo-id") {
@@ -68,7 +68,7 @@ func TestDiscoverNormalRepository(t *testing.T) {
 	if repo.CommonFrigoDir != filepath.Join(wantGitDir, "frigo") {
 		t.Fatalf("CommonFrigoDir = %q", repo.CommonFrigoDir)
 	}
-	if repo.LinkedStoresDir != filepath.Join(wantGitDir, "worktrees") {
+	if repo.LinkedStoresDir != filepath.Join(wantGitDir, "frigo", "worktrees") {
 		t.Fatalf("LinkedStoresDir = %q", repo.LinkedStoresDir)
 	}
 	if repo.WorktreeIDPath != filepath.Join(wantGitDir, "frigo-id") {
@@ -185,7 +185,7 @@ func TestDiscoverLinkedWorktreeUsesWorktreeLocalState(t *testing.T) {
 	if repo.CommonFrigoDir != filepath.Join(root, ".git", "frigo") {
 		t.Fatalf("CommonFrigoDir = %q", repo.CommonFrigoDir)
 	}
-	if repo.LinkedStoresDir != filepath.Join(root, ".git", "worktrees") {
+	if repo.LinkedStoresDir != filepath.Join(root, ".git", "frigo", "worktrees") {
 		t.Fatalf("LinkedStoresDir = %q", repo.LinkedStoresDir)
 	}
 	if repo.WorktreeIDPath != filepath.Join(repo.GitDir, "frigo-id") {

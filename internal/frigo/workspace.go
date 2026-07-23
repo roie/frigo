@@ -6,17 +6,18 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/roie/frigo/internal/atomicfile"
 	"github.com/roie/frigo/internal/git"
 	"github.com/roie/frigo/internal/lockfile"
 	"github.com/roie/frigo/internal/repository"
 )
 
 type Workspace struct {
-	repo     repository.Repository
-	git      git.Client
-	baseDir  string
-	lockWait time.Duration
+	repo            repository.Repository
+	git             git.Client
+	baseDir         string
+	lockWait        time.Duration
+	linkedStoreHook func(string) error
+	lifecycleHook   func(string) error
 }
 
 func NewWorkspace(repo repository.Repository, client git.Client, baseDir string) *Workspace {
@@ -54,5 +55,6 @@ func (w *Workspace) privateOutput(ctx context.Context, client git.Client, args .
 const privateAttributes = "* -text !eol !filter -ident !working-tree-encoding !diff\n"
 
 func (w *Workspace) ensurePrivateAttributes() error {
-	return atomicfile.Write(w.repo.PrivateAttributesPath, []byte(privateAttributes), 0o600)
+	_, err := ensureManagedFile(w.repo.PrivateAttributesPath, []byte(privateAttributes), 0o600, true)
+	return err
 }

@@ -2,6 +2,7 @@ package ignore
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/roie/frigo/internal/atomicfile"
+	"github.com/roie/frigo/internal/metadata"
 	"github.com/roie/frigo/internal/registry"
 	"github.com/roie/frigo/internal/repository"
 	"github.com/roie/frigo/internal/testsync"
@@ -19,6 +21,10 @@ const (
 	startMarker = "# >>> frigo >>>"
 	endMarker   = "# <<< frigo <<<"
 )
+
+var syncBeforeReplace = func() error {
+	return testsync.Point(context.Background(), "exclude-before-replace")
+}
 
 // LiteralPattern converts a normalized root-relative path into a literal root-anchored ignore pattern.
 func LiteralPattern(candidate string) (string, error) {
@@ -57,6 +63,7 @@ func Sync(repo repository.Repository, owned registry.Registry) error {
 	}
 
 	existing, err := os.ReadFile(repo.ExcludePath)
+	existed := err == nil
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read Git exclude file: %w", err)
 	}
@@ -69,6 +76,17 @@ func Sync(repo repository.Repository, owned registry.Registry) error {
 	mode := os.FileMode(0o644)
 	if info, statErr := os.Stat(repo.ExcludePath); statErr == nil {
 		mode = info.Mode().Perm()
+	}
+	if err := syncBeforeReplace(); err != nil {
+		return fmt.Errorf("synchronize Git exclude replacement: %w", err)
+	}
+	current, currentErr := os.ReadFile(repo.ExcludePath)
+	currentExists := currentErr == nil
+	if currentErr != nil && !os.IsNotExist(currentErr) {
+		return fmt.Errorf("compare Git exclude file before replacement: %w", currentErr)
+	}
+	if currentExists != existed || !bytes.Equal(current, existing) {
+		return fmt.Errorf("Git exclude file changed while Frigo was synchronizing it; retry the operation")
 	}
 	if err := atomicfile.Write(repo.ExcludePath, output, mode); err != nil {
 		return fmt.Errorf("write Git exclude file: %w", err)
@@ -83,10 +101,17 @@ func unionPaths(repo repository.Repository, owned registry.Registry) ([]string, 
 	}
 
 	currentRegistry := filepath.Clean(repo.RegistryPath)
-	files := []string{filepath.Join(repo.CommonDir, "frigo", "registry.json")}
-	linked, err := filepath.Glob(filepath.Join(repo.CommonDir, "worktrees", "*", "frigo", "registry.json"))
+	var files []string
+	commonStoreExists, err := realDirectoryExists(repo.CommonFrigoDir)
 	if err != nil {
-		return nil, fmt.Errorf("scan linked worktree registries: %w", err)
+		return nil, fmt.Errorf("inspect common frigo store: %w", err)
+	}
+	if commonStoreExists {
+		files = append(files, filepath.Join(repo.CommonFrigoDir, "registry.json"))
+	}
+	linked, err := liveLinkedRegistryPaths(repo)
+	if err != nil {
+		return nil, err
 	}
 	files = append(files, linked...)
 
@@ -101,11 +126,15 @@ func unionPaths(repo repository.Repository, owned registry.Registry) ([]string, 
 		}
 		loaded[filename] = struct{}{}
 
+		exists, err := regularFileExists(filename)
+		if err != nil {
+			return nil, fmt.Errorf("inspect agreed registry %s: %w", filename, err)
+		}
+		if !exists {
+			continue
+		}
 		reg, err := registry.Load(filename)
 		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
 			return nil, fmt.Errorf("load registry %s: %w", filename, err)
 		}
 		for _, candidate := range reg.Paths {
@@ -119,6 +148,129 @@ func unionPaths(repo repository.Repository, owned registry.Registry) ([]string, 
 	}
 	sort.Strings(paths)
 	return paths, nil
+}
+
+func liveLinkedRegistryPaths(repo repository.Repository) ([]string, error) {
+	adminRoot := filepath.Join(repo.CommonDir, "worktrees")
+	if ok, err := realDirectoryExists(adminRoot); err != nil || !ok {
+		return nil, err
+	}
+	if ok, err := realDirectoryExists(repo.CommonFrigoDir); err != nil || !ok {
+		return nil, err
+	}
+	if ok, err := realDirectoryExists(repo.LinkedStoresDir); err != nil || !ok {
+		return nil, err
+	}
+	entries, err := os.ReadDir(adminRoot)
+	if err != nil {
+		return nil, fmt.Errorf("scan active Git worktree administration: %w", err)
+	}
+
+	var paths []string
+	for _, entry := range entries {
+		admin := filepath.Join(adminRoot, entry.Name())
+		if ok, _ := realDirectoryExists(admin); !ok {
+			continue
+		}
+		checkoutGitFile, ok := readPathFile(filepath.Join(admin, "gitdir"), "")
+		if !ok {
+			continue
+		}
+		checkoutGitFile = resolveRelationshipPath(admin, checkoutGitFile)
+		if filepath.Base(checkoutGitFile) != ".git" {
+			continue
+		}
+		checkoutRoot := filepath.Clean(filepath.Dir(checkoutGitFile))
+		adminFromCheckout, ok := readPathFile(checkoutGitFile, "gitdir: ")
+		if !ok {
+			continue
+		}
+		adminFromCheckout = resolveRelationshipPath(checkoutRoot, adminFromCheckout)
+		if adminFromCheckout != filepath.Clean(admin) {
+			continue
+		}
+
+		pointerPath := filepath.Join(admin, "frigo-id")
+		if exists, _ := regularFileExists(pointerPath); !exists {
+			continue
+		}
+		id, err := metadata.LoadPointer(pointerPath)
+		if err != nil {
+			continue
+		}
+		store := filepath.Join(repo.LinkedStoresDir, id)
+		if ok, _ := realDirectoryExists(store); !ok {
+			continue
+		}
+		manifestPath := filepath.Join(store, "manifest.json")
+		if exists, _ := regularFileExists(manifestPath); !exists {
+			continue
+		}
+		manifest, err := metadata.Load(manifestPath)
+		if err != nil || manifest.ID != id || manifest.WorktreePath != checkoutRoot {
+			continue
+		}
+		registryPath := filepath.Join(store, "registry.json")
+		if exists, _ := regularFileExists(registryPath); !exists {
+			continue
+		}
+		paths = append(paths, registryPath)
+	}
+	return paths, nil
+}
+
+func realDirectoryExists(filename string) (bool, error) {
+	info, err := os.Lstat(filename)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return false, nil
+	}
+	return true, nil
+}
+
+func regularFileExists(filename string) (bool, error) {
+	info, err := os.Lstat(filename)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return false, nil
+	}
+	return true, nil
+}
+
+func readPathFile(filename, prefix string) (string, bool) {
+	if exists, _ := regularFileExists(filename); !exists {
+		return "", false
+	}
+	contents, err := os.ReadFile(filename)
+	if err != nil || len(contents) == 0 || contents[len(contents)-1] != '\n' {
+		return "", false
+	}
+	value := string(contents[:len(contents)-1])
+	if strings.ContainsAny(value, "\r\n") || !strings.HasPrefix(value, prefix) {
+		return "", false
+	}
+	value = strings.TrimPrefix(value, prefix)
+	if value == "" {
+		return "", false
+	}
+	return value, true
+}
+
+func resolveRelationshipPath(base, value string) string {
+	if filepath.IsAbs(value) {
+		return filepath.Clean(value)
+	}
+	return filepath.Clean(filepath.Join(base, value))
 }
 
 func rewrite(existing []byte, paths []string) ([]byte, error) {

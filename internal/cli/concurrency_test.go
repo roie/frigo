@@ -16,6 +16,7 @@ import (
 
 	gitpkg "github.com/roie/frigo/internal/git"
 	"github.com/roie/frigo/internal/ignore"
+	"github.com/roie/frigo/internal/metadata"
 	"github.com/roie/frigo/internal/registry"
 	"github.com/roie/frigo/internal/repository"
 	"github.com/roie/frigo/internal/testrepo"
@@ -155,7 +156,7 @@ func TestConcurrentCLIRepositoryOperations(t *testing.T) {
 		)
 
 		assertRegistryPaths(t, mainRepo.RegistryPath, "main.local")
-		assertRegistryPaths(t, linkedRepo.RegistryPath, "linked.local")
+		assertRegistryPaths(t, linkedRegistryPath(t, linkedRepo), "linked.local")
 		assertExcludePatterns(t, mainRepo.ExcludePath, "main.local", "linked.local")
 	})
 }
@@ -399,6 +400,15 @@ func runCLI(t *testing.T, binary, root string, args ...string) {
 	if err != nil {
 		t.Fatalf("frigo %v: %v\n%s", args, err, output)
 	}
+}
+
+func linkedRegistryPath(t *testing.T, repo repository.Repository) string {
+	t.Helper()
+	id, err := metadata.LoadPointer(repo.WorktreeIDPath)
+	if err != nil {
+		t.Fatalf("load linked pointer %s: %v", repo.WorktreeIDPath, err)
+	}
+	return repo.WithFrigoDir(filepath.Join(repo.LinkedStoresDir, id)).RegistryPath
 }
 
 func assertRegistryPaths(t *testing.T, filename string, want ...string) {

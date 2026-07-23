@@ -2,6 +2,7 @@ package frigo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -59,17 +60,33 @@ func (w *Workspace) releaseLocked(ctx context.Context, rawPaths []string, force 
 	if err != nil {
 		return registry.ReleaseResult{}, err
 	}
+	rollback := func(cause error) (registry.ReleaseResult, error) {
+		restoreErr := saveRegistry(w.repo.RegistryPath, original)
+		var excludeErr error
+		if restoreErr == nil {
+			excludeErr = ignore.Sync(w.repo, original)
+		}
+		syncErr := testsync.Point(ctx, "release-rollback-complete")
+		return registry.ReleaseResult{}, errors.Join(
+			cause,
+			wrapOptional("restore frigo registry", restoreErr),
+			wrapOptional("restore frigo exclusions", excludeErr),
+			wrapOptional("synchronize release rollback test", syncErr),
+		)
+	}
 	if err := saveRegistry(w.repo.RegistryPath, owned); err != nil {
 		return registry.ReleaseResult{}, fmt.Errorf("save frigo registry: %w", err)
 	}
 	if err := ignore.Sync(w.repo, owned); err != nil {
-		if rollbackErr := saveRegistry(w.repo.RegistryPath, original); rollbackErr != nil {
-			return registry.ReleaseResult{}, fmt.Errorf("%v; rollback failed: %w", err, rollbackErr)
+		return rollback(err)
+	}
+	if w.repo.LinkedWorktree && len(owned.Paths) == 0 {
+		if err := w.releaseOwnedWorktreeLock(ctx); err != nil {
+			if worktreeLockAllowsActiveRegistryRestore(err) {
+				return rollback(err)
+			}
+			return registry.ReleaseResult{}, err
 		}
-		if syncErr := testsync.Point(ctx, "release-rollback-complete"); syncErr != nil {
-			return registry.ReleaseResult{}, fmt.Errorf("%v; synchronize rollback test: %w", err, syncErr)
-		}
-		return registry.ReleaseResult{}, err
 	}
 	return result, nil
 }

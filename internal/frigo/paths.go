@@ -14,6 +14,9 @@ import (
 )
 
 func (w *Workspace) loadRegistry(ctx context.Context) (registry.Registry, error) {
+	if err := w.ensureLayout(ctx, false); err != nil {
+		return registry.Registry{}, err
+	}
 	owned, err := w.loadRegistryFile()
 	if err != nil {
 		return registry.Registry{}, err
@@ -25,6 +28,9 @@ func (w *Workspace) loadRegistry(ctx context.Context) (registry.Registry, error)
 }
 
 func (w *Workspace) loadSeparatedRegistry(ctx context.Context) (registry.Registry, error) {
+	if err := w.ensureLayout(ctx, false); err != nil {
+		return registry.Registry{}, err
+	}
 	owned, err := w.loadRegistryFile()
 	if err != nil {
 		return registry.Registry{}, err
@@ -46,6 +52,16 @@ func (w *Workspace) loadRegistryFile() (registry.Registry, error) {
 	historyExists, err := pathExists(w.repo.HistoryDir)
 	if err != nil {
 		return registry.Registry{}, fmt.Errorf("inspect frigo history: %w", err)
+	}
+	if registryExists {
+		if err := requireManagedRegularFile(w.repo.RegistryPath); err != nil {
+			return registry.Registry{}, fmt.Errorf("inspect frigo registry: %w", err)
+		}
+	}
+	if historyExists {
+		if err := requireManagedDirectory(w.repo.HistoryDir); err != nil {
+			return registry.Registry{}, fmt.Errorf("inspect frigo history: %w", err)
+		}
 	}
 	if registryExists != historyExists {
 		return registry.Registry{}, fmt.Errorf("frigo metadata is incomplete: registry and history must exist together")
