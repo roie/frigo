@@ -33,8 +33,12 @@ func (w *Workspace) diffLocked(ctx context.Context, rawPaths []string) (string, 
 	if err != nil {
 		return "", err
 	}
+	base, err := w.resolveHistoryBase(ctx)
+	if err != nil {
+		return "", err
+	}
 	var output string
-	if err := w.withTemporaryIndex(ctx, intentPaths, func(client git.Client) error {
+	if err := w.withTemporaryIndexAt(ctx, base, intentPaths, func(client git.Client) error {
 		args := append([]string{"diff", "--no-ext-diff", "--ita-visible-in-index", "--"}, paths...)
 		result, err := w.privateOutput(ctx, client, args...)
 		if err != nil {

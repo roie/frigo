@@ -55,10 +55,14 @@ func (w *Workspace) commitLocked(ctx context.Context, options CommitOptions) (Co
 	if err != nil {
 		return CommitResult{}, err
 	}
+	base, err := w.resolveHistoryBase(ctx)
+	if err != nil {
+		return CommitResult{}, err
+	}
 
 	var result CommitResult
 	var commit string
-	if err := w.withTemporaryIndex(ctx, intentPaths, func(client git.Client) error {
+	if err := w.withTemporaryIndexAt(ctx, base, intentPaths, func(client git.Client) error {
 		if len(paths) > 0 {
 			args := append([]string{"add", "--force", "--all", "--"}, paths...)
 			if _, err := w.privateOutput(ctx, client, args...); err != nil {
@@ -80,16 +84,8 @@ func (w *Workspace) commitLocked(ctx context.Context, options CommitOptions) (Co
 			return fmt.Errorf("write frigo tree: %w", err)
 		}
 		commitArgs := []string{"commit-tree", tree, "-m", options.Message}
-		hasHead, err := w.hasHead(ctx)
-		if err != nil {
-			return err
-		}
-		if hasHead {
-			parent, err := w.privateOutput(ctx, client, "rev-parse", "HEAD")
-			if err != nil {
-				return fmt.Errorf("read frigo parent commit: %w", err)
-			}
-			commitArgs = []string{"commit-tree", tree, "-p", parent, "-m", options.Message}
+		if base.Exists {
+			commitArgs = []string{"commit-tree", tree, "-p", base.OID, "-m", options.Message}
 		}
 		commitClient, err := w.commitClient(ctx, client)
 		if err != nil {
@@ -109,11 +105,24 @@ func (w *Workspace) commitLocked(ctx context.Context, options CommitOptions) (Co
 		return CommitResult{}, err
 	}
 	if result.Committed {
-		if _, err := w.privateOutput(ctx, w.git, "update-ref", "HEAD", commit); err != nil {
+		expected := base.OID
+		if _, err := w.privateOutput(ctx, w.git, "update-ref", "HEAD", commit, expected); err != nil {
+			if isStaleHistoryUpdate(err) {
+				return CommitResult{}, fmt.Errorf("frigo history changed concurrently; retry the commit: %w", err)
+			}
 			return CommitResult{}, fmt.Errorf("update frigo HEAD: %w", err)
 		}
 	}
 	return result, nil
+}
+
+func isStaleHistoryUpdate(err error) bool {
+	var commandErr *git.CommandError
+	if !errors.As(err, &commandErr) {
+		return false
+	}
+	return strings.Contains(commandErr.Stderr, "but expected") ||
+		strings.Contains(commandErr.Stderr, "reference already exists")
 }
 
 func (w *Workspace) commitPaths(options CommitOptions, owned registry.Registry) ([]string, error) {

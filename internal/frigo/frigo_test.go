@@ -465,12 +465,16 @@ func TestTemporaryIndexRemovedOnFailure(t *testing.T) {
 	ownForTest(t, ws, "PLAN.md")
 	testrepo.Write(t, root, "PLAN.md", "draft\n")
 
+	base, err := ws.resolveHistoryBase(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	wantErr := errors.New("boom")
-	err := ws.withTemporaryIndex(context.Background(), []string{"PLAN.md"}, func(client gitpkg.Client) error {
+	err = ws.withTemporaryIndexAt(context.Background(), base, []string{"PLAN.md"}, func(client gitpkg.Client) error {
 		return wantErr
 	})
 	if !errors.Is(err, wantErr) {
-		t.Fatalf("withTemporaryIndex() error = %v, want %v", err, wantErr)
+		t.Fatalf("withTemporaryIndexAt() error = %v, want %v", err, wantErr)
 	}
 
 	assertNoPersistentIndex(t, ws)
@@ -486,11 +490,15 @@ func TestTemporaryIndexRemovedOnCloseFailure(t *testing.T) {
 	closeTemporaryIndex = func(*os.File) error { return errors.New("close failed") }
 	t.Cleanup(func() { closeTemporaryIndex = oldClose })
 
-	err := ws.withTemporaryIndex(context.Background(), []string{"PLAN.md"}, func(client gitpkg.Client) error {
+	base, err := ws.resolveHistoryBase(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = ws.withTemporaryIndexAt(context.Background(), base, []string{"PLAN.md"}, func(client gitpkg.Client) error {
 		return nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "close temporary index") {
-		t.Fatalf("withTemporaryIndex() error = %v, want close temporary index error", err)
+		t.Fatalf("withTemporaryIndexAt() error = %v, want close temporary index error", err)
 	}
 
 	assertNoPersistentIndex(t, ws)
@@ -513,11 +521,15 @@ func TestTemporaryIndexRemovedOnRemoveFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { removeTemporaryIndex = oldRemove })
 
-	err := ws.withTemporaryIndex(context.Background(), []string{"PLAN.md"}, func(client gitpkg.Client) error {
+	base, err := ws.resolveHistoryBase(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = ws.withTemporaryIndexAt(context.Background(), base, []string{"PLAN.md"}, func(client gitpkg.Client) error {
 		return nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "remove temporary index") {
-		t.Fatalf("withTemporaryIndex() error = %v, want remove temporary index error", err)
+		t.Fatalf("withTemporaryIndexAt() error = %v, want remove temporary index error", err)
 	}
 	if calls < 2 {
 		t.Fatalf("removeTemporaryIndex() calls = %d, want cleanup retry", calls)
@@ -940,7 +952,11 @@ func saveForTest(t *testing.T, ws *Workspace, message string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ws.withTemporaryIndex(context.Background(), owned.Paths, func(client gitpkg.Client) error {
+	base, err := ws.resolveHistoryBase(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.withTemporaryIndexAt(context.Background(), base, owned.Paths, func(client gitpkg.Client) error {
 		args := append([]string{"add", "-A", "--"}, owned.Paths...)
 		if _, err := ws.privateOutput(context.Background(), client, args...); err != nil {
 			return err
@@ -950,22 +966,14 @@ func saveForTest(t *testing.T, ws *Workspace, message string) {
 			return err
 		}
 		commitArgs := []string{"commit-tree", tree, "-m", message}
-		hasHead, err := ws.hasHead(context.Background())
-		if err != nil {
-			return err
-		}
-		if hasHead {
-			parent, err := ws.privateOutput(context.Background(), client, "rev-parse", "HEAD")
-			if err != nil {
-				return err
-			}
-			commitArgs = append([]string{"commit-tree", tree, "-p", parent, "-m", message}, commitArgs[4:]...)
+		if base.Exists {
+			commitArgs = []string{"commit-tree", tree, "-p", base.OID, "-m", message}
 		}
 		commit, err := ws.privateOutput(context.Background(), client, commitArgs...)
 		if err != nil {
 			return err
 		}
-		_, err = ws.privateOutput(context.Background(), client, "update-ref", "HEAD", commit)
+		_, err = ws.privateOutput(context.Background(), client, "update-ref", "HEAD", commit, base.OID)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -1173,5 +1181,35 @@ func failingGitClient(t *testing.T, failGitDir, failCommand, failArg string) git
 		"FRIGO_FAIL_GIT_DIR="+failGitDir,
 		"FRIGO_FAIL_COMMAND="+failCommand,
 		"FRIGO_FAIL_ARG="+failArg,
+	)
+}
+
+func concurrentUpdateGitClient(t *testing.T, historyDir, winner, expected string) gitpkg.Client {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git is required")
+	}
+	wrapper := filepath.Join(t.TempDir(), "git-concurrent-update-wrapper")
+	script := "#!/bin/sh\n" +
+		"set -eu\n" +
+		"seen_update_ref=0\n" +
+		"seen_head=0\n" +
+		"for arg in \"$@\"; do\n" +
+		"  if [ \"$arg\" = update-ref ]; then seen_update_ref=1; fi\n" +
+		"  if [ \"$arg\" = HEAD ]; then seen_head=1; fi\n" +
+		"done\n" +
+		"if [ \"$seen_update_ref\" = 1 ] && [ \"$seen_head\" = 1 ]; then\n" +
+		"  \"${FRIGO_REAL_GIT}\" --git-dir=\"${FRIGO_HISTORY_DIR}\" update-ref HEAD \"${FRIGO_WINNER}\" \"${FRIGO_EXPECTED}\"\n" +
+		"fi\n" +
+		"exec \"${FRIGO_REAL_GIT}\" \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return gitpkg.Client{Path: wrapper}.WithEnv(
+		"FRIGO_REAL_GIT="+realGit,
+		"FRIGO_HISTORY_DIR="+historyDir,
+		"FRIGO_WINNER="+winner,
+		"FRIGO_EXPECTED="+expected,
 	)
 }

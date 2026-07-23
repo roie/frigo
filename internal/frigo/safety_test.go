@@ -302,11 +302,15 @@ func TestTemporaryIndexJoinsFinalCleanupFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { removeTemporaryIndex = oldRemove })
 
-	err := ws.withTemporaryIndex(context.Background(), nil, func(client gitpkg.Client) error {
+	base, err := ws.resolveHistoryBase(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = ws.withTemporaryIndexAt(context.Background(), base, nil, func(client gitpkg.Client) error {
 		return callbackErr
 	})
 	if !errors.Is(err, callbackErr) || !errors.Is(err, cleanupErr) {
-		t.Fatalf("withTemporaryIndex() error = %v, want joined callback and cleanup errors", err)
+		t.Fatalf("withTemporaryIndexAt() error = %v, want joined callback and cleanup errors", err)
 	}
 	if calls != 2 {
 		t.Fatalf("removeTemporaryIndex() calls = %d, want 2", calls)
@@ -341,6 +345,65 @@ func TestCommitDoesNotUpdateHeadWhenTemporaryIndexCleanupFails(t *testing.T) {
 	}
 	if hasHead {
 		t.Fatal("Commit() updated HEAD before temporary-index cleanup succeeded")
+	}
+}
+
+func TestCommitRejectsStaleHistoryBase(t *testing.T) {
+	ws, root := committedWorkspace(t, "PLAN.md", "base\n")
+	base, err := ws.privateOutput(context.Background(), ws.git, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	testrepo.Write(t, root, "PLAN.md", "winner\n")
+	saveForTest(t, ws, "winner")
+	winner, err := ws.privateOutput(context.Background(), ws.git, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.privateOutput(context.Background(), ws.git, "update-ref", "HEAD", base, winner); err != nil {
+		t.Fatal(err)
+	}
+	testrepo.Write(t, root, "PLAN.md", "stale contender\n")
+
+	stale := NewWorkspace(ws.repo, concurrentUpdateGitClient(t, ws.repo.HistoryDir, winner, base), root)
+	_, commitErr := stale.Commit(context.Background(), CommitOptions{Message: "stale", All: true})
+	if commitErr == nil || !strings.Contains(commitErr.Error(), "frigo history changed concurrently; retry the commit") {
+		t.Errorf("Commit() error = %v, want concurrent history error", commitErr)
+	}
+	got, err := ws.privateOutput(context.Background(), ws.git, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != winner {
+		t.Errorf("HEAD = %s, want winning commit %s", got, winner)
+	}
+}
+
+func TestConcurrentUnbornCommit(t *testing.T) {
+	ws, root := workspaceWithOwnership(t, "PLAN.md")
+	testrepo.Write(t, root, "PLAN.md", "winner\n")
+	saveForTest(t, ws, "winner")
+	winner, err := ws.privateOutput(context.Background(), ws.git, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.privateOutput(context.Background(), ws.git, "update-ref", "-d", "HEAD", winner); err != nil {
+		t.Fatal(err)
+	}
+	testrepo.Write(t, root, "PLAN.md", "stale contender\n")
+
+	stale := NewWorkspace(ws.repo, concurrentUpdateGitClient(t, ws.repo.HistoryDir, winner, ""), root)
+	_, commitErr := stale.Commit(context.Background(), CommitOptions{Message: "stale", All: true})
+	if commitErr == nil || !strings.Contains(commitErr.Error(), "frigo history changed concurrently; retry the commit") {
+		t.Errorf("Commit() error = %v, want concurrent history error", commitErr)
+	}
+	got, err := ws.privateOutput(context.Background(), ws.git, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != winner {
+		t.Errorf("HEAD = %s, want winning commit %s", got, winner)
 	}
 }
 

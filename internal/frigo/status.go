@@ -63,8 +63,12 @@ func (w *Workspace) statusLocked(ctx context.Context, rawPaths []string) (string
 	if err != nil {
 		return "", err
 	}
+	base, err := w.resolveHistoryBase(ctx)
+	if err != nil {
+		return "", err
+	}
 	var output string
-	if err := w.withTemporaryIndex(ctx, intentPaths, func(client git.Client) error {
+	if err := w.withTemporaryIndexAt(ctx, base, intentPaths, func(client git.Client) error {
 		args := append([]string{"status", "--short", "--untracked-files=all", "--"}, paths...)
 		result, err := w.privateOutput(ctx, client, args...)
 		if err != nil {

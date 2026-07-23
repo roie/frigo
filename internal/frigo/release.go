@@ -38,7 +38,11 @@ func (w *Workspace) releaseLocked(ctx context.Context, rawPaths []string, force 
 	}
 
 	if !force {
-		dirty, err := w.releaseDirtyPaths(ctx, paths)
+		base, err := w.resolveHistoryBase(ctx)
+		if err != nil {
+			return registry.ReleaseResult{}, err
+		}
+		dirty, err := w.releaseDirtyPaths(ctx, base, paths)
 		if err != nil {
 			return registry.ReleaseResult{}, err
 		}
@@ -70,14 +74,14 @@ func (w *Workspace) releaseLocked(ctx context.Context, rawPaths []string, force 
 	return result, nil
 }
 
-func (w *Workspace) releaseDirtyPaths(ctx context.Context, paths []string) ([]string, error) {
+func (w *Workspace) releaseDirtyPaths(ctx context.Context, base historyBase, paths []string) ([]string, error) {
 	intentPaths, err := w.intentPaths(paths)
 	if err != nil {
 		return nil, err
 	}
 
 	dirty := make([]string, 0, len(paths))
-	if err := w.withTemporaryIndex(ctx, intentPaths, func(client git.Client) error {
+	if err := w.withTemporaryIndexAt(ctx, base, intentPaths, func(client git.Client) error {
 		for _, candidate := range paths {
 			args := []string{"status", "--porcelain", "--untracked-files=all", "--", candidate}
 			output, err := w.privateOutput(ctx, client, args...)

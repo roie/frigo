@@ -30,16 +30,16 @@ func (w *Workspace) restoreLocked(ctx context.Context, rawPaths []string) ([]str
 		return []string{}, nil
 	}
 
-	hasHead, err := w.hasHead(ctx)
+	base, err := w.resolveHistoryBase(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if !hasHead {
+	if !base.Exists {
 		return nil, fmt.Errorf("no saved history")
 	}
 
 	for _, candidate := range paths {
-		output, err := w.privateOutput(ctx, w.git.WithEnv("GIT_ATTR_NOSYSTEM=1"), "ls-tree", "-r", "--name-only", "HEAD", "--", candidate)
+		output, err := w.privateOutput(ctx, w.git.WithEnv("GIT_ATTR_NOSYSTEM=1"), "ls-tree", "-r", "--name-only", base.OID, "--", candidate)
 		if err != nil {
 			return nil, fmt.Errorf("inspect saved path %s: %w", candidate, err)
 		}
@@ -48,8 +48,8 @@ func (w *Workspace) restoreLocked(ctx context.Context, rawPaths []string) ([]str
 		}
 	}
 
-	if err := w.withTemporaryIndex(ctx, nil, func(client git.Client) error {
-		args := append([]string{"restore", "--source=HEAD", "--worktree", "--"}, paths...)
+	if err := w.withTemporaryIndexAt(ctx, base, nil, func(client git.Client) error {
+		args := append([]string{"restore", "--source=" + base.OID, "--worktree", "--"}, paths...)
 		if _, err := w.privateOutput(ctx, client, args...); err != nil {
 			return fmt.Errorf("restore frigo paths: %w", err)
 		}
