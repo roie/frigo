@@ -83,7 +83,7 @@ func (w *Workspace) ensureWorktreeProtection(ctx context.Context, id string) (bo
 		if manifest.LockOwned {
 			return false, nil
 		}
-		if err := w.persistLockOwnership(manifest, true, "worktree-lock-before-owned-save"); err != nil {
+		if err := w.persistLockOwnership(manifest, true, "worktree-lock-before-owned-save", "worktree-lock-owned-save"); err != nil {
 			return false, fmt.Errorf("persist ownership of existing exact worktree lock: %w", err)
 		}
 		return false, nil
@@ -105,7 +105,7 @@ func (w *Workspace) ensureWorktreeProtection(ctx context.Context, id string) (bo
 	if manifest.LockOwned {
 		return true, nil
 	}
-	if err := w.persistLockOwnership(manifest, true, "worktree-lock-before-owned-save"); err != nil {
+	if err := w.persistLockOwnership(manifest, true, "worktree-lock-before-owned-save", "worktree-lock-owned-save"); err != nil {
 		rollbackErr := w.undoNewWorktreeLock(ctx, id, expected)
 		return false, errors.Join(
 			fmt.Errorf("persist lifecycle lock ownership: %w", err),
@@ -139,10 +139,7 @@ func (w *Workspace) releaseOwnedWorktreeLock(ctx context.Context) error {
 		return err
 	}
 	if !lock.matches(expected) {
-		return &worktreeLockReleaseError{
-			cause:                 fmt.Errorf("linked worktree lock does not exactly match owned reason; refusing to unlock"),
-			restoreActiveRegistry: true,
-		}
+		return fmt.Errorf("linked worktree lock does not exactly match owned reason; refusing to unlock")
 	}
 
 	if _, err := w.git.Output(ctx, "", "-C", w.repo.Root, "worktree", "unlock", w.repo.Root); err != nil {
@@ -159,7 +156,7 @@ func (w *Workspace) releaseOwnedWorktreeLock(ctx context.Context) error {
 		return w.compensateUnlockFailure(ctx, id, expected,
 			fmt.Errorf("worktree unlock postcondition failed; lock remains with reason %q", lock.reason))
 	}
-	if err := w.persistLockOwnership(manifest, false, "worktree-unlock-before-owned-save"); err != nil {
+	if err := w.persistLockOwnership(manifest, false, "worktree-unlock-before-owned-save", "worktree-unlock-owned-save"); err != nil {
 		return w.compensateUnlockFailure(ctx, id, expected,
 			fmt.Errorf("persist cleared lifecycle lock ownership: %w", err))
 	}
@@ -195,8 +192,8 @@ func (w *Workspace) proveLinkedAssociation(ctx context.Context, id string) (meta
 	return manifest, nil
 }
 
-func (w *Workspace) persistLockOwnership(manifest metadata.Manifest, owned bool, boundary string) error {
-	if err := w.lifecycleBoundary(boundary); err != nil {
+func (w *Workspace) persistLockOwnership(manifest metadata.Manifest, owned bool, beforeBoundary, afterBoundary string) error {
+	if err := w.lifecycleBoundary(beforeBoundary); err != nil {
 		return err
 	}
 	manifest.LockOwned = owned
@@ -205,6 +202,9 @@ func (w *Workspace) persistLockOwnership(manifest metadata.Manifest, owned bool,
 		return err
 	}
 	if err := metadata.Save(filename, manifest); err != nil {
+		return err
+	}
+	if err := w.lifecycleBoundary(afterBoundary); err != nil {
 		return err
 	}
 	loaded, err := metadata.Load(filename)
@@ -299,8 +299,7 @@ func (w *Workspace) reacquireWorktreeProtection(ctx context.Context, id, expecte
 		}
 	}
 	if !manifest.LockOwned {
-		manifest.LockOwned = true
-		if err := metadata.Save(filepath.Join(w.repo.FrigoDir, manifestName), manifest); err != nil {
+		if err := w.persistLockOwnership(manifest, true, "worktree-relock-before-owned-save", "worktree-relock-owned-save"); err != nil {
 			return fmt.Errorf("restore lifecycle ownership evidence: %w", err)
 		}
 	}
@@ -309,10 +308,7 @@ func (w *Workspace) reacquireWorktreeProtection(ctx context.Context, id, expecte
 
 func worktreeLockAllowsActiveRegistryRestore(err error) bool {
 	var releaseErr *worktreeLockReleaseError
-	if !errors.As(err, &releaseErr) {
-		return true
-	}
-	return releaseErr.restoreActiveRegistry
+	return errors.As(err, &releaseErr) && releaseErr.restoreActiveRegistry
 }
 
 func (w *Workspace) lifecycleBoundary(name string) error {

@@ -197,6 +197,82 @@ func TestWorktreeLockCompensatesOwnershipSaveFailure(t *testing.T) {
 	}
 }
 
+func TestWorktreeLockOwnershipSaveBoundaryFollowsDurableWrite(t *testing.T) {
+	ws, _, _ := initializedLinkedWorkspace(t)
+	id := linkedWorkspaceID(t, ws)
+	injected := errors.New("interrupt after ownership save")
+	observed := false
+	ws.lifecycleHook = func(name string) error {
+		if name != "worktree-lock-owned-save" {
+			return nil
+		}
+		observed = linkedManifest(t, ws).LockOwned
+		return injected
+	}
+
+	_, err := ws.ensureWorktreeProtection(context.Background(), id)
+	if !errors.Is(err, injected) {
+		t.Fatalf("ensureWorktreeProtection() error = %v, want post-save interruption", err)
+	}
+	if !observed {
+		t.Fatal("ownership-save callback ran before durable LockOwned=true")
+	}
+}
+
+func TestWorktreeUnlockOwnershipSaveBoundaryFollowsDurableWrite(t *testing.T) {
+	ws, _, _ := initializedLinkedWorkspace(t)
+	id := linkedWorkspaceID(t, ws)
+	if _, err := ws.ensureWorktreeProtection(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("interrupt after ownership clear")
+	observed := false
+	ws.lifecycleHook = func(name string) error {
+		if name != "worktree-unlock-owned-save" {
+			return nil
+		}
+		observed = !linkedManifest(t, ws).LockOwned
+		return injected
+	}
+
+	err := ws.releaseOwnedWorktreeLock(context.Background())
+	if !errors.Is(err, injected) {
+		t.Fatalf("releaseOwnedWorktreeLock() error = %v, want post-save interruption", err)
+	}
+	if !observed {
+		t.Fatal("ownership-save callback ran before durable LockOwned=false")
+	}
+}
+
+func TestWorktreeRelockOwnershipSaveBoundaryFollowsDurableWrite(t *testing.T) {
+	ws, _, _ := initializedLinkedWorkspace(t)
+	id := linkedWorkspaceID(t, ws)
+	if _, err := ws.ensureWorktreeProtection(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	manifest := linkedManifest(t, ws)
+	if err := ws.persistLockOwnership(manifest, false, "test-before-clear", "test-after-clear"); err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("interrupt after relock ownership save")
+	observed := false
+	ws.lifecycleHook = func(name string) error {
+		if name != "worktree-relock-owned-save" {
+			return nil
+		}
+		observed = linkedManifest(t, ws).LockOwned
+		return injected
+	}
+
+	err := ws.reacquireWorktreeProtection(context.Background(), id, worktreeLockReason(id))
+	if !errors.Is(err, injected) {
+		t.Fatalf("reacquireWorktreeProtection() error = %v, want post-save interruption", err)
+	}
+	if !observed {
+		t.Fatal("relock ownership-save callback ran before durable LockOwned=true")
+	}
+}
+
 func TestWorktreeLockReacquiresAfterUnlockBoundaryFailure(t *testing.T) {
 	ws, _, _ := initializedLinkedWorkspace(t)
 	id := linkedWorkspaceID(t, ws)
@@ -347,6 +423,92 @@ func TestWorktreeLockReleaseDoesNotRestoreActiveRegistryWithoutReacquiredProtect
 	}
 	if _, statErr := os.Stat(ws.repo.WorktreeIDPath); statErr != nil {
 		t.Fatalf("pointer evidence removed after failed compensation: %v", statErr)
+	}
+}
+
+func TestWorktreeLockLastReleaseWithoutExactProtectionLeavesRegistryInactive(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*testing.T, string, string) bool
+	}{
+		{
+			name: "missing lock",
+			setup: func(t *testing.T, lockPath, _ string) bool {
+				t.Helper()
+				if err := os.Remove(lockPath); err != nil {
+					t.Fatal(err)
+				}
+				return false
+			},
+		},
+		{
+			name: "foreign lock",
+			setup: func(t *testing.T, lockPath, _ string) bool {
+				t.Helper()
+				if err := os.WriteFile(lockPath, []byte("foreign owner\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return true
+			},
+		},
+		{
+			name: "mismatched frigo lock",
+			setup: func(t *testing.T, lockPath, _ string) bool {
+				t.Helper()
+				mismatched := worktreeLockReason(strings.Repeat("f", 32)) + "\n"
+				if err := os.WriteFile(lockPath, []byte(mismatched), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return true
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ws, _, linkedRoot := newLinkedWorkspace(t)
+			testrepo.Write(t, linkedRoot, "PLAN.md", "private\n")
+			if _, err := ws.Add(context.Background(), []string{"PLAN.md"}); err != nil {
+				t.Fatal(err)
+			}
+			lockPath := filepath.Join(ws.repo.GitDir, "locked")
+			lockExists := tt.setup(t, lockPath, linkedWorkspaceID(t, ws))
+			var lockBefore managedPathSnapshot
+			if lockExists {
+				lockBefore = snapshotManagedPath(t, lockPath)
+			}
+			pointerBefore := snapshotManagedPath(t, ws.repo.WorktreeIDPath)
+			manifestPath := filepath.Join(ws.repo.FrigoDir, manifestName)
+			manifestBefore := snapshotManagedPath(t, manifestPath)
+
+			_, err := ws.Release(context.Background(), []string{"PLAN.md"}, true)
+			if err == nil || !strings.Contains(err.Error(), "does not exactly match") {
+				t.Fatalf("Release() error = %v, want missing exact lifecycle protection", err)
+			}
+			owned, loadErr := registry.Load(ws.repo.RegistryPath)
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			if len(owned.Paths) != 0 {
+				t.Fatalf("registry paths = %v, want inactive without exact protection", owned.Paths)
+			}
+			contents, readErr := os.ReadFile(ws.repo.ExcludePath)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if strings.Contains(string(contents), "/PLAN.md") {
+				t.Fatalf("exclude restored active path without protection: %q", contents)
+			}
+			assertManagedPathUnchanged(t, ws.repo.WorktreeIDPath, pointerBefore)
+			assertManagedPathUnchanged(t, manifestPath, manifestBefore)
+			if !linkedManifest(t, ws).LockOwned {
+				t.Fatal("manifest ownership evidence was removed without exact protection")
+			}
+			if lockExists {
+				assertManagedPathUnchanged(t, lockPath, lockBefore)
+			} else if _, statErr := os.Lstat(lockPath); !os.IsNotExist(statErr) {
+				t.Fatalf("missing lock was recreated: %v", statErr)
+			}
+		})
 	}
 }
 

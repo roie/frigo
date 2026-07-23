@@ -1,6 +1,7 @@
 package frigo
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -200,7 +201,7 @@ func (w *Workspace) initializeHistory(ctx context.Context) error {
 	if err := rejectSymlinksUnder(w.repo.HistoryDir); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("inspect partial frigo history: %w", err)
 	}
-	if _, err := w.git.Output(ctx, "", "init", "--bare", "--quiet", w.repo.HistoryDir); err != nil {
+	if _, err := w.git.WithEnv("GIT_TEMPLATE_DIR=").Output(ctx, "", "init", "--bare", "--quiet", w.repo.HistoryDir); err != nil {
 		return fmt.Errorf("initialize frigo history: %w", err)
 	}
 	if err := w.linkedStoreBoundary("linked-store-history"); err != nil {
@@ -210,6 +211,9 @@ func (w *Workspace) initializeHistory(ctx context.Context) error {
 	created, err := createManagedDirectory(w.repo.HooksDir)
 	if err != nil {
 		return fmt.Errorf("create empty frigo hooks directory: %w", err)
+	}
+	if err := requireEmptyManagedDirectory(w.repo.HooksDir); err != nil {
+		return fmt.Errorf("validate empty frigo hooks directory: %w", err)
 	}
 	if created {
 		if err := w.linkedStoreBoundary("linked-store-hooks"); err != nil {
@@ -224,6 +228,9 @@ func (w *Workspace) initializeHistory(ctx context.Context) error {
 		if err := w.linkedStoreBoundary("linked-store-attributes"); err != nil {
 			return err
 		}
+	}
+	if err := ensureManagedDirectory(filepath.Dir(w.repo.PrivateAttributesPath)); err != nil {
+		return fmt.Errorf("create frigo private attributes directory: %w", err)
 	}
 	written, err = ensureManagedFile(w.repo.PrivateAttributesPath, []byte(privateAttributes), 0o600, true)
 	if err != nil {
@@ -255,6 +262,9 @@ func (w *Workspace) initializeHistory(ctx context.Context) error {
 }
 
 func (w *Workspace) validateInitializedHistory(ctx context.Context) error {
+	if err := rejectSymlinksUnder(w.repo.HistoryDir); err != nil {
+		return fmt.Errorf("validate frigo history entries: %w", err)
+	}
 	bare, err := w.git.Output(ctx, "", "--git-dir="+w.repo.HistoryDir, "rev-parse", "--is-bare-repository")
 	if err != nil || !strings.EqualFold(bare, "true") {
 		if err == nil {
@@ -262,21 +272,14 @@ func (w *Workspace) validateInitializedHistory(ctx context.Context) error {
 		}
 		return fmt.Errorf("frigo history is not a valid bare Git repository: %w", err)
 	}
-	if err := requireManagedDirectory(w.repo.HooksDir); err != nil {
+	if err := requireEmptyManagedDirectory(w.repo.HooksDir); err != nil {
 		return fmt.Errorf("validate frigo hooks: %w", err)
 	}
-	if err := requireManagedRegularFile(w.repo.AttributesPath); err != nil {
+	if err := requireManagedFileContents(w.repo.AttributesPath, nil); err != nil {
 		return fmt.Errorf("validate frigo attributes: %w", err)
 	}
-	if err := requireManagedRegularFile(w.repo.PrivateAttributesPath); err != nil {
+	if err := requireManagedFileContents(w.repo.PrivateAttributesPath, []byte(privateAttributes)); err != nil {
 		return fmt.Errorf("validate frigo private attributes: %w", err)
-	}
-	private, err := os.ReadFile(w.repo.PrivateAttributesPath)
-	if err != nil {
-		return fmt.Errorf("read frigo private attributes: %w", err)
-	}
-	if string(private) != privateAttributes {
-		return fmt.Errorf("frigo private attributes have unexpected contents")
 	}
 	for _, config := range [][2]string{
 		{"core.hooksPath", w.repo.HooksDir},
@@ -333,6 +336,24 @@ func requireManagedDirectory(filename string) error {
 	return nil
 }
 
+func requireEmptyManagedDirectory(root string) error {
+	if err := requireManagedDirectory(root); err != nil {
+		return err
+	}
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == root {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("managed directory %s contains symlink %s", root, path)
+		}
+		return fmt.Errorf("managed directory %s is not empty: %s", root, path)
+	})
+}
+
 func ensureManagedDirectory(filename string) error {
 	err := requireManagedDirectory(filename)
 	if err == nil {
@@ -378,6 +399,20 @@ func requireManagedRegularFile(filename string) error {
 	return nil
 }
 
+func requireManagedFileContents(filename string, expected []byte) error {
+	if err := requireManagedRegularFile(filename); err != nil {
+		return err
+	}
+	contents, err := os.ReadFile(filename)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(contents, expected) {
+		return fmt.Errorf("managed file %s has unexpected contents", filename)
+	}
+	return nil
+}
+
 func ensureManagedFile(filename string, data []byte, mode os.FileMode, replace bool) (bool, error) {
 	info, err := os.Lstat(filename)
 	if os.IsNotExist(err) {
@@ -392,14 +427,14 @@ func ensureManagedFile(filename string, data []byte, mode os.FileMode, replace b
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return false, fmt.Errorf("managed path %s is not a regular file", filename)
 	}
-	if !replace {
-		return false, nil
-	}
 	existing, err := os.ReadFile(filename)
 	if err != nil {
 		return false, err
 	}
-	if string(existing) == string(data) {
+	if !replace && !bytes.Equal(existing, data) {
+		return false, fmt.Errorf("managed file %s has unexpected contents", filename)
+	}
+	if !replace || bytes.Equal(existing, data) {
 		return false, nil
 	}
 	if err := atomicfile.Write(filename, data, mode); err != nil {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -289,6 +290,7 @@ func TestLinkedStoreRejectsSymlinkAndForeignManagedEntries(t *testing.T) {
 				t.Fatal(err)
 			}
 			managed := tt.setup(t, ws, target)
+			managedBefore := snapshotManagedPath(t, managed)
 
 			_, err := ws.Add(context.Background(), []string{"PLAN.md"})
 			if err == nil {
@@ -298,10 +300,173 @@ func TestLinkedStoreRejectsSymlinkAndForeignManagedEntries(t *testing.T) {
 			if readErr != nil || string(contents) != "untouched\n" {
 				t.Fatalf("foreign target = %q, %v; want untouched", contents, readErr)
 			}
-			if _, statErr := os.Lstat(managed); statErr != nil {
-				t.Fatalf("managed foreign entry was removed: %v", statErr)
-			}
+			assertManagedPathUnchanged(t, managed, managedBefore)
 		})
+	}
+}
+
+func TestLinkedStoreRejectsNonemptyPublicAttributesWithoutMutation(t *testing.T) {
+	ws, _, linkedRoot := newLinkedWorkspace(t)
+	testrepo.Write(t, linkedRoot, "PLAN.md", "private\n")
+	if _, err := ws.Add(context.Background(), []string{"PLAN.md"}); err != nil {
+		t.Fatal(err)
+	}
+	foreign := []byte("foreign attributes\n")
+	if err := os.WriteFile(ws.repo.AttributesPath, foreign, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Lstat(ws.repo.AttributesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	err = ws.withLock(ctx, "test reject foreign public attributes", func() error {
+		return ws.ensureLayout(ctx, true)
+	})
+	if err == nil || !strings.Contains(err.Error(), "attributes") {
+		t.Fatalf("ensureLayout() error = %v, want nonempty attributes rejection", err)
+	}
+	after, statErr := os.Lstat(ws.repo.AttributesPath)
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if after.Mode().Type() != before.Mode().Type() {
+		t.Fatalf("attributes type = %v, want unchanged %v", after.Mode().Type(), before.Mode().Type())
+	}
+	contents, readErr := os.ReadFile(ws.repo.AttributesPath)
+	if readErr != nil || !slices.Equal(contents, foreign) {
+		t.Fatalf("attributes = %q, %v; want exact foreign bytes %q", contents, readErr, foreign)
+	}
+}
+
+func TestLinkedStoreRejectsNestedHookWithoutMutation(t *testing.T) {
+	ws, _, linkedRoot := newLinkedWorkspace(t)
+	testrepo.Write(t, linkedRoot, "PLAN.md", "private\n")
+	if _, err := ws.Add(context.Background(), []string{"PLAN.md"}); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(ws.repo.HooksDir, "nested", "foreign-hook")
+	if err := os.MkdirAll(filepath.Dir(nested), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	foreign := []byte("#!/bin/sh\nexit 1\n")
+	if err := os.WriteFile(nested, foreign, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Lstat(nested)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	err = ws.withLock(ctx, "test reject nested hook", func() error {
+		return ws.ensureLayout(ctx, true)
+	})
+	if err == nil || !strings.Contains(err.Error(), "hooks") {
+		t.Fatalf("ensureLayout() error = %v, want nonempty hooks rejection", err)
+	}
+	after, statErr := os.Lstat(nested)
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if after.Mode().Type() != before.Mode().Type() {
+		t.Fatalf("nested hook type = %v, want unchanged %v", after.Mode().Type(), before.Mode().Type())
+	}
+	contents, readErr := os.ReadFile(nested)
+	if readErr != nil || !slices.Equal(contents, foreign) {
+		t.Fatalf("nested hook = %q, %v; want exact foreign bytes %q", contents, readErr, foreign)
+	}
+}
+
+func TestLinkedStoreInitIgnoresConfiguredTemplateSymlink(t *testing.T) {
+	ws, _, linkedRoot := newLinkedWorkspace(t)
+	testrepo.Write(t, linkedRoot, "PLAN.md", "private\n")
+	template := t.TempDir()
+	templateHooks := filepath.Join(template, "hooks")
+	if err := os.MkdirAll(templateHooks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "foreign-hook")
+	if err := os.WriteFile(target, []byte("untouched\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(templateHooks, "pre-commit")); err != nil {
+		t.Fatal(err)
+	}
+	ws.git = ws.git.WithEnv("GIT_TEMPLATE_DIR=" + template)
+
+	if _, err := ws.Add(context.Background(), []string{"PLAN.md"}); err != nil {
+		t.Fatalf("Add() error = %v", err)
+	}
+	copied := filepath.Join(ws.repo.HistoryDir, "hooks", "pre-commit")
+	if _, err := os.Lstat(copied); !os.IsNotExist(err) {
+		t.Fatalf("configured template entry exists at %s: %v", copied, err)
+	}
+	contents, err := os.ReadFile(target)
+	if err != nil || string(contents) != "untouched\n" {
+		t.Fatalf("template target = %q, %v; want untouched", contents, err)
+	}
+}
+
+func TestLinkedStoreValidationRejectsPostInitHistorySymlink(t *testing.T) {
+	ws, _, _ := newLinkedWorkspace(t)
+	target := filepath.Join(t.TempDir(), "foreign")
+	if err := os.WriteFile(target, []byte("untouched\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var injected string
+	ws.linkedStoreHook = func(name string) error {
+		if name != "linked-store-history" {
+			return nil
+		}
+		if got := testrepo.Output(t, ws.repo.Root, "--git-dir="+ws.repo.HistoryDir, "rev-parse", "--is-bare-repository"); got != "true" {
+			t.Fatalf("history callback ran before durable init: bare = %q", got)
+		}
+		injected = filepath.Join(ws.repo.HistoryDir, "foreign-link")
+		return os.Symlink(target, injected)
+	}
+
+	ctx := context.Background()
+	err := ws.withLock(ctx, "test post-init history validation", func() error {
+		return ws.ensureLayout(ctx, true)
+	})
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("ensureLayout() error = %v, want post-init history symlink rejection", err)
+	}
+	info, statErr := os.Lstat(injected)
+	if statErr != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("injected history entry type = %v, %v; want unchanged symlink", info, statErr)
+	}
+	contents, readErr := os.ReadFile(target)
+	if readErr != nil || string(contents) != "untouched\n" {
+		t.Fatalf("history symlink target = %q, %v; want untouched", contents, readErr)
+	}
+}
+
+func TestLinkedStoreValidationRejectsAttributesChangedAfterWrite(t *testing.T) {
+	ws, _, _ := newLinkedWorkspace(t)
+	foreign := []byte("changed after write\n")
+	ws.linkedStoreHook = func(name string) error {
+		if name != "linked-store-config-commit.gpgSign" {
+			return nil
+		}
+		if got := testrepo.Output(t, ws.repo.Root, "--git-dir="+ws.repo.HistoryDir, "config", "--get", "commit.gpgSign"); got != "false" {
+			t.Fatalf("config callback ran before durable write: commit.gpgSign = %q", got)
+		}
+		return os.WriteFile(ws.repo.AttributesPath, foreign, 0o600)
+	}
+
+	ctx := context.Background()
+	err := ws.withLock(ctx, "test post-write attributes validation", func() error {
+		return ws.ensureLayout(ctx, true)
+	})
+	if err == nil || !strings.Contains(err.Error(), "attributes") {
+		t.Fatalf("ensureLayout() error = %v, want changed attributes rejection", err)
+	}
+	contents, readErr := os.ReadFile(ws.repo.AttributesPath)
+	if readErr != nil || !slices.Equal(contents, foreign) {
+		t.Fatalf("attributes = %q, %v; want exact changed bytes %q", contents, readErr, foreign)
 	}
 }
 
@@ -484,7 +649,23 @@ func TestLinkedStoreRecoversEveryDurableBoundary(t *testing.T) {
 	}
 	for _, boundary := range boundaries {
 		t.Run(boundary, func(t *testing.T) {
-			ws, _, _ := newLinkedWorkspace(t)
+			ws, mainRoot, _ := newLinkedWorkspace(t)
+			siblingRoot := filepath.Join(filepath.Dir(mainRoot), filepath.Base(mainRoot)+"-sibling")
+			testrepo.Run(t, mainRoot, "worktree", "add", "-q", "-b", "sibling-branch", siblingRoot)
+			t.Cleanup(func() { _ = os.RemoveAll(siblingRoot) })
+			siblingRepo, err := repository.Discover(context.Background(), gitpkg.Client{Path: "git"}, siblingRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sibling := NewWorkspace(siblingRepo, gitpkg.Client{Path: "git"}, siblingRoot)
+			testrepo.Write(t, siblingRoot, "sibling.local", "sibling\n")
+			if _, err := sibling.Add(context.Background(), []string{"sibling.local"}); err != nil {
+				t.Fatal(err)
+			}
+			siblingID := linkedWorkspaceID(t, sibling)
+			siblingHistory := sibling.repo.HistoryDir
+			siblingBefore := snapshotManagedTree(t, siblingHistory)
+
 			if err := os.MkdirAll(ws.repo.LinkedStoresDir, 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -492,18 +673,81 @@ func TestLinkedStoreRecoversEveryDurableBoundary(t *testing.T) {
 			if err := os.WriteFile(foreign, []byte("untouched\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			foreignBefore := snapshotManagedPath(t, foreign)
 
+			ctx := context.Background()
 			interrupted := errors.New("interrupt durable boundary")
 			fired := false
+			currentStore := ""
 			ws.linkedStoreHook = func(got string) error {
+				switch got {
+				case "linked-store-directory":
+					entries, readErr := os.ReadDir(ws.repo.LinkedStoresDir)
+					if readErr != nil {
+						t.Fatal(readErr)
+					}
+					for _, entry := range entries {
+						if entry.IsDir() && entry.Name() != siblingID && isMetadataID(entry.Name()) {
+							currentStore = filepath.Join(ws.repo.LinkedStoresDir, entry.Name())
+						}
+					}
+					if currentStore == "" {
+						t.Fatal("directory callback ran before durable linked-store creation")
+					}
+					entries, readErr = os.ReadDir(currentStore)
+					if readErr != nil || len(entries) != 0 {
+						t.Fatalf("new store at directory callback = %v, %v; want empty durable directory", entryNames(entries), readErr)
+					}
+				case "linked-store-manifest":
+					manifest, loadErr := metadata.Load(filepath.Join(currentStore, manifestName))
+					if loadErr != nil || manifest.ID != filepath.Base(currentStore) || manifest.WorktreePath != ws.repo.Root {
+						t.Fatalf("manifest callback ran before durable exact manifest: %#v, %v", manifest, loadErr)
+					}
+				case "linked-store-history":
+					if got := testrepo.Output(t, ws.repo.Root, "--git-dir="+ws.repo.HistoryDir, "rev-parse", "--is-bare-repository"); got != "true" {
+						t.Fatalf("history callback ran before durable init: bare = %q", got)
+					}
+				case "linked-store-hooks":
+					entries, readErr := os.ReadDir(ws.repo.HooksDir)
+					if readErr != nil || len(entries) != 0 {
+						t.Fatalf("hooks callback ran before durable empty directory: %v, %v", entryNames(entries), readErr)
+					}
+				case "linked-store-attributes":
+					contents, readErr := os.ReadFile(ws.repo.AttributesPath)
+					if readErr != nil || len(contents) != 0 {
+						t.Fatalf("attributes callback ran before durable empty file: %q, %v", contents, readErr)
+					}
+				case "linked-store-private-attributes":
+					contents, readErr := os.ReadFile(ws.repo.PrivateAttributesPath)
+					if readErr != nil || string(contents) != privateAttributes {
+						t.Fatalf("private attributes callback ran before durable write: %q, %v", contents, readErr)
+					}
+				case "linked-store-config-core.hooksPath", "linked-store-config-core.attributesFile", "linked-store-config-core.autocrlf", "linked-store-config-commit.gpgSign":
+					key := strings.TrimPrefix(got, "linked-store-config-")
+					want := map[string]string{
+						"core.hooksPath": ws.repo.HooksDir, "core.attributesFile": ws.repo.AttributesPath,
+						"core.autocrlf": "false", "commit.gpgSign": "false",
+					}[key]
+					if value := testrepo.Output(t, ws.repo.Root, "--git-dir="+ws.repo.HistoryDir, "config", "--get", key); value != want {
+						t.Fatalf("config callback %s observed %q, want durable %q", key, value, want)
+					}
+				case "linked-store-history-validation":
+					if validateErr := ws.validateInitializedHistory(ctx); validateErr != nil {
+						t.Fatalf("validation callback ran before durable postconditions: %v", validateErr)
+					}
+				case "linked-store-pointer":
+					id, loadErr := metadata.LoadPointer(ws.repo.WorktreeIDPath)
+					if loadErr != nil || id != filepath.Base(currentStore) {
+						t.Fatalf("pointer callback ran before durable exact pointer: %q, %v", id, loadErr)
+					}
+				}
 				if got == boundary && !fired {
 					fired = true
 					return interrupted
 				}
 				return nil
 			}
-			ctx := context.Background()
-			err := ws.withLock(ctx, "test interrupted initialize", func() error {
+			err = ws.withLock(ctx, "test interrupted initialize", func() error {
 				return ws.ensureLayout(ctx, true)
 			})
 			if !errors.Is(err, interrupted) {
@@ -512,9 +756,8 @@ func TestLinkedStoreRecoversEveryDurableBoundary(t *testing.T) {
 			if !fired {
 				t.Fatalf("boundary %q was not reached", boundary)
 			}
-			if got, readErr := os.ReadFile(foreign); readErr != nil || string(got) != "untouched\n" {
-				t.Fatalf("foreign entry after interruption = %q, %v", got, readErr)
-			}
+			assertManagedPathUnchanged(t, foreign, foreignBefore)
+			assertManagedTreeUnchanged(t, siblingHistory, siblingBefore)
 
 			ws.linkedStoreHook = nil
 			if err := ws.withLock(ctx, "test recover initialize", func() error {
@@ -523,9 +766,8 @@ func TestLinkedStoreRecoversEveryDurableBoundary(t *testing.T) {
 				t.Fatalf("recovery ensureLayout() error = %v", err)
 			}
 			assertValidLinkedStore(t, ws)
-			if got, readErr := os.ReadFile(foreign); readErr != nil || string(got) != "untouched\n" {
-				t.Fatalf("foreign entry after recovery = %q, %v", got, readErr)
-			}
+			assertManagedPathUnchanged(t, foreign, foreignBefore)
+			assertManagedTreeUnchanged(t, siblingHistory, siblingBefore)
 		})
 	}
 }
@@ -616,7 +858,26 @@ func assertValidLinkedStore(t *testing.T, ws *Workspace) {
 			t.Fatalf("config %s = %q, want %q", key, got, want)
 		}
 	}
-	private, err := os.ReadFile(filepath.Join(store, "history.git", "info", "attributes"))
+	history := filepath.Join(store, "history.git")
+	if err := rejectSymlinksUnder(history); err != nil {
+		t.Fatalf("history validation failed: %v", err)
+	}
+	hooks := filepath.Join(store, "hooks")
+	entries, err := os.ReadDir(hooks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("hooks entries = %v, want empty", entryNames(entries))
+	}
+	attributes, err := os.ReadFile(filepath.Join(store, "attributes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attributes) != 0 {
+		t.Fatalf("public attributes = %q, want empty", attributes)
+	}
+	private, err := os.ReadFile(filepath.Join(history, "info", "attributes"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -648,6 +909,81 @@ func newLinkedWorkspace(t *testing.T) (*Workspace, string, string) {
 		t.Fatal(err)
 	}
 	return NewWorkspace(repo, gitpkg.Client{Path: "git"}, linkedRoot), mainRoot, linkedRoot
+}
+
+type managedPathSnapshot struct {
+	mode os.FileMode
+	data []byte
+	link string
+}
+
+func snapshotManagedPath(t *testing.T, filename string) managedPathSnapshot {
+	t.Helper()
+	info, err := os.Lstat(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := managedPathSnapshot{mode: info.Mode()}
+	switch {
+	case info.Mode()&os.ModeSymlink != 0:
+		snapshot.link, err = os.Readlink(filename)
+	case info.Mode().IsRegular():
+		snapshot.data, err = os.ReadFile(filename)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
+
+func assertManagedPathUnchanged(t *testing.T, filename string, want managedPathSnapshot) {
+	t.Helper()
+	got := snapshotManagedPath(t, filename)
+	if got.mode.Type() != want.mode.Type() {
+		t.Fatalf("managed path %s type = %v, want unchanged %v", filename, got.mode.Type(), want.mode.Type())
+	}
+	if !slices.Equal(got.data, want.data) {
+		t.Fatalf("managed path %s bytes = %q, want exact %q", filename, got.data, want.data)
+	}
+	if got.link != want.link {
+		t.Fatalf("managed path %s link target = %q, want exact %q", filename, got.link, want.link)
+	}
+}
+
+func snapshotManagedTree(t *testing.T, root string) map[string]managedPathSnapshot {
+	t.Helper()
+	snapshot := make(map[string]managedPathSnapshot)
+	if err := filepath.WalkDir(root, func(path string, _ os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		snapshot[relative] = snapshotManagedPath(t, path)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
+
+func assertManagedTreeUnchanged(t *testing.T, root string, want map[string]managedPathSnapshot) {
+	t.Helper()
+	got := snapshotManagedTree(t, root)
+	if len(got) != len(want) {
+		t.Fatalf("managed tree %s entry count = %d, want %d", root, len(got), len(want))
+	}
+	for path, wantEntry := range want {
+		gotEntry, ok := got[path]
+		if !ok {
+			t.Fatalf("managed tree %s lost %s", root, path)
+		}
+		if gotEntry.mode.Type() != wantEntry.mode.Type() || !slices.Equal(gotEntry.data, wantEntry.data) || gotEntry.link != wantEntry.link {
+			t.Fatalf("managed tree %s changed at %s", root, path)
+		}
+	}
 }
 
 func entryNames(entries []os.DirEntry) []string {
