@@ -9,6 +9,7 @@ import (
 	"github.com/roie/frigo/internal/git"
 	"github.com/roie/frigo/internal/ignore"
 	"github.com/roie/frigo/internal/registry"
+	"github.com/roie/frigo/internal/testsync"
 )
 
 var saveRegistry = registry.Save
@@ -35,6 +36,9 @@ func (w *Workspace) addLocked(ctx context.Context, rawPaths []string) (registry.
 	owned, created, err := w.loadForAdd(ctx)
 	if err != nil {
 		return registry.AddResult{}, err
+	}
+	if err := testsync.Point(ctx, "add-loaded"); err != nil {
+		return registry.AddResult{}, fmt.Errorf("synchronize add test: %w", err)
 	}
 	original := registry.Registry{Version: owned.Version, Paths: append([]string(nil), owned.Paths...)}
 	result, err := owned.Add(paths...)

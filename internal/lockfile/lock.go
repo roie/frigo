@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"os"
 	"time"
+
+	"github.com/roie/frigo/internal/testsync"
 )
 
 const pollInterval = 100 * time.Millisecond
@@ -43,6 +45,9 @@ func Acquire(ctx context.Context, filename, operation string, wait time.Duration
 		}
 		if !errors.Is(err, os.ErrExist) {
 			return nil, fmt.Errorf("acquire operation lock %s: %w", filename, err)
+		}
+		if err := testsync.Notify("lock-contended"); err != nil {
+			return nil, fmt.Errorf("report operation lock contention: %w", err)
 		}
 
 		ownerDescription := describeOwner(filename)

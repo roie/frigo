@@ -8,6 +8,7 @@ import (
 	"github.com/roie/frigo/internal/git"
 	"github.com/roie/frigo/internal/ignore"
 	"github.com/roie/frigo/internal/registry"
+	"github.com/roie/frigo/internal/testsync"
 )
 
 func (w *Workspace) Release(ctx context.Context, rawPaths []string, force bool) (registry.ReleaseResult, error) {
@@ -45,6 +46,9 @@ func (w *Workspace) releaseLocked(ctx context.Context, rawPaths []string, force 
 			return registry.ReleaseResult{}, fmt.Errorf("uncommitted frigo changes under %s; use --force to release anyway", strings.Join(dirty, ", "))
 		}
 	}
+	if err := testsync.Point(ctx, "release-loaded"); err != nil {
+		return registry.ReleaseResult{}, fmt.Errorf("synchronize release test: %w", err)
+	}
 
 	original := registry.Registry{Version: owned.Version, Paths: append([]string(nil), owned.Paths...)}
 	result, err := owned.Release(paths...)
@@ -57,6 +61,9 @@ func (w *Workspace) releaseLocked(ctx context.Context, rawPaths []string, force 
 	if err := ignore.Sync(w.repo, owned); err != nil {
 		if rollbackErr := saveRegistry(w.repo.RegistryPath, original); rollbackErr != nil {
 			return registry.ReleaseResult{}, fmt.Errorf("%v; rollback failed: %w", err, rollbackErr)
+		}
+		if syncErr := testsync.Point(ctx, "release-rollback-complete"); syncErr != nil {
+			return registry.ReleaseResult{}, fmt.Errorf("%v; synchronize rollback test: %w", err, syncErr)
 		}
 		return registry.ReleaseResult{}, err
 	}

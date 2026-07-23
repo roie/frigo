@@ -2,6 +2,7 @@ package lockfile
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -41,8 +42,12 @@ func TestAcquireExclusivelyAndReportsOwner(t *testing.T) {
 	if len(got.Token) != 32 {
 		t.Fatalf("token length = %d, want 32", len(got.Token))
 	}
-	if _, err := strconv.ParseUint(got.Token[:16], 16, 64); err != nil {
+	token, err := hex.DecodeString(got.Token)
+	if err != nil {
 		t.Fatalf("token is not lowercase hex: %q", got.Token)
+	}
+	if len(token) != 16 {
+		t.Fatalf("decoded token length = %d, want 16", len(token))
 	}
 	if got.Token != strings.ToLower(got.Token) {
 		t.Fatalf("token = %q, want lowercase", got.Token)

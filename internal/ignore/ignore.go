@@ -12,6 +12,7 @@ import (
 	"github.com/roie/frigo/internal/atomicfile"
 	"github.com/roie/frigo/internal/registry"
 	"github.com/roie/frigo/internal/repository"
+	"github.com/roie/frigo/internal/testsync"
 )
 
 const (
@@ -47,6 +48,9 @@ func LiteralPattern(candidate string) (string, error) {
 
 // Sync rewrites frigo's managed section in the common info/exclude file.
 func Sync(repo repository.Repository, owned registry.Registry) error {
+	if err := testsync.Fail("exclude-sync"); err != nil {
+		return err
+	}
 	paths, err := unionPaths(repo, owned)
 	if err != nil {
 		return fmt.Errorf("collect frigo exclude paths: %w", err)

@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,10 +16,17 @@ import (
 
 	gitpkg "github.com/roie/frigo/internal/git"
 	"github.com/roie/frigo/internal/ignore"
-	"github.com/roie/frigo/internal/lockfile"
 	"github.com/roie/frigo/internal/registry"
 	"github.com/roie/frigo/internal/repository"
 	"github.com/roie/frigo/internal/testrepo"
+)
+
+const (
+	addLoaded               = "add-loaded"
+	releaseLoaded           = "release-loaded"
+	releaseRollbackComplete = "release-rollback-complete"
+	lockContended           = "lock-contended"
+	excludeSync             = "exclude-sync"
 )
 
 type cliProcessResult struct {
@@ -27,9 +36,21 @@ type cliProcessResult struct {
 }
 
 type cliProcess struct {
-	cmd    *exec.Cmd
-	done   chan struct{}
-	result cliProcessResult
+	cmd     *exec.Cmd
+	done    chan struct{}
+	result  cliProcessResult
+	syncDir string
+}
+
+type processHooks struct {
+	syncDir string
+	pause   []string
+	fail    []string
+}
+
+type contender struct {
+	process    *cliProcess
+	checkpoint string
 }
 
 func TestConcurrentCLIRepositoryOperations(t *testing.T) {
@@ -40,14 +61,14 @@ func TestConcurrentCLIRepositoryOperations(t *testing.T) {
 		testrepo.Write(t, root, "alpha.local", "alpha\n")
 		testrepo.Write(t, root, "beta.local", "beta\n")
 		repo := discoverRepository(t, root)
-		guard, released := holdOperationLock(t, repo.OperationLockPath)
+		syncDir := t.TempDir()
 
-		alpha := startCLI(t, binary, root, "add", "alpha.local")
-		beta := startCLI(t, binary, root, "add", "beta.local")
-		assertProcessesBlocked(t, alpha, beta)
-		releaseOperationLock(t, guard, released)
-		assertProcessSuccess(t, alpha)
-		assertProcessSuccess(t, beta)
+		alpha := startCLI(t, binary, root, processHooks{syncDir: syncDir, pause: []string{addLoaded}}, "add", "alpha.local")
+		beta := startCLI(t, binary, root, processHooks{syncDir: syncDir, pause: []string{addLoaded}}, "add", "beta.local")
+		assertSerializedContenders(t, repo.OperationLockPath,
+			contender{process: alpha, checkpoint: addLoaded},
+			contender{process: beta, checkpoint: addLoaded},
+		)
 
 		assertRegistryPaths(t, repo.RegistryPath, "alpha.local", "beta.local")
 		assertExcludePatterns(t, repo.ExcludePath, "alpha.local", "beta.local")
@@ -60,18 +81,54 @@ func TestConcurrentCLIRepositoryOperations(t *testing.T) {
 		}
 		runCLI(t, binary, root, "add", "keep.local", "old.local")
 		repo := discoverRepository(t, root)
-		guard, released := holdOperationLock(t, repo.OperationLockPath)
+		syncDir := t.TempDir()
 
-		add := startCLI(t, binary, root, "add", "new.local")
-		release := startCLI(t, binary, root, "release", "--force", "old.local")
-		assertProcessesBlocked(t, add, release)
-		releaseOperationLock(t, guard, released)
-		assertProcessSuccess(t, add)
-		assertProcessSuccess(t, release)
+		add := startCLI(t, binary, root, processHooks{syncDir: syncDir, pause: []string{addLoaded}}, "add", "new.local")
+		release := startCLI(t, binary, root, processHooks{syncDir: syncDir, pause: []string{releaseLoaded}}, "release", "--force", "old.local")
+		assertSerializedContenders(t, repo.OperationLockPath,
+			contender{process: add, checkpoint: addLoaded},
+			contender{process: release, checkpoint: releaseLoaded},
+		)
 
 		assertRegistryPaths(t, repo.RegistryPath, "keep.local", "new.local")
 		assertExcludePatterns(t, repo.ExcludePath, "keep.local", "new.local")
 		assertExcludeOmits(t, repo.ExcludePath, "old.local")
+	})
+
+	t.Run("release rollback completes before add proceeds", func(t *testing.T) {
+		root := testrepo.Init(t)
+		for _, path := range []string{"keep.local", "old.local", "new.local"} {
+			testrepo.Write(t, root, path, path+"\n")
+		}
+		runCLI(t, binary, root, "add", "keep.local", "old.local")
+		repo := discoverRepository(t, root)
+		syncDir := t.TempDir()
+
+		failedRelease := startCLI(t, binary, root, processHooks{
+			syncDir: syncDir,
+			pause:   []string{releaseRollbackComplete},
+			fail:    []string{excludeSync},
+		}, "release", "--force", "old.local")
+		waitForProcessEvent(t, failedRelease, releaseRollbackComplete)
+		assertLockOwner(t, repo.OperationLockPath, failedRelease)
+		assertProcessRunning(t, failedRelease, "release rollback checkpoint")
+		assertRegistryPaths(t, repo.RegistryPath, "keep.local", "old.local")
+		assertExcludePatterns(t, repo.ExcludePath, "keep.local", "old.local")
+
+		add := startCLI(t, binary, root, processHooks{syncDir: syncDir, pause: []string{addLoaded}}, "add", "new.local")
+		waitForProcessEvent(t, add, lockContended)
+		assertLockOwner(t, repo.OperationLockPath, failedRelease)
+		continueProcess(t, failedRelease, releaseRollbackComplete)
+		assertProcessFailure(t, failedRelease, "induced test failure at exclude-sync")
+
+		waitForProcessEvent(t, add, addLoaded)
+		assertLockOwner(t, repo.OperationLockPath, add)
+		assertRegistryPaths(t, repo.RegistryPath, "keep.local", "old.local")
+		continueProcess(t, add, addLoaded)
+		assertProcessSuccess(t, add)
+
+		assertRegistryPaths(t, repo.RegistryPath, "keep.local", "new.local", "old.local")
+		assertExcludePatterns(t, repo.ExcludePath, "keep.local", "new.local", "old.local")
 	})
 
 	t.Run("main and linked worktrees share contention", func(t *testing.T) {
@@ -88,14 +145,14 @@ func TestConcurrentCLIRepositoryOperations(t *testing.T) {
 		if mainRepo.OperationLockPath != linkedRepo.OperationLockPath {
 			t.Fatalf("operation lock paths differ: %q != %q", mainRepo.OperationLockPath, linkedRepo.OperationLockPath)
 		}
-		guard, released := holdOperationLock(t, mainRepo.OperationLockPath)
+		syncDir := t.TempDir()
 
-		mainAdd := startCLI(t, binary, root, "add", "main.local")
-		linkedAdd := startCLI(t, binary, linked, "add", "linked.local")
-		assertProcessesBlocked(t, mainAdd, linkedAdd)
-		releaseOperationLock(t, guard, released)
-		assertProcessSuccess(t, mainAdd)
-		assertProcessSuccess(t, linkedAdd)
+		mainAdd := startCLI(t, binary, root, processHooks{syncDir: syncDir, pause: []string{addLoaded}}, "add", "main.local")
+		linkedAdd := startCLI(t, binary, linked, processHooks{syncDir: syncDir, pause: []string{addLoaded}}, "add", "linked.local")
+		assertSerializedContenders(t, mainRepo.OperationLockPath,
+			contender{process: mainAdd, checkpoint: addLoaded},
+			contender{process: linkedAdd, checkpoint: addLoaded},
+		)
 
 		assertRegistryPaths(t, mainRepo.RegistryPath, "main.local")
 		assertRegistryPaths(t, linkedRepo.RegistryPath, "linked.local")
@@ -110,7 +167,7 @@ func buildCLI(t *testing.T) string {
 		name += ".exe"
 	}
 	binary := filepath.Join(t.TempDir(), name)
-	cmd := exec.Command("go", "build", "-o", binary, "github.com/roie/frigo/cmd/frigo")
+	cmd := exec.Command("go", "build", "-tags=frigo_test", "-o", binary, "github.com/roie/frigo/cmd/frigo")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build frigo: %v\n%s", err, output)
 	}
@@ -126,37 +183,19 @@ func discoverRepository(t *testing.T, root string) repository.Repository {
 	return repo
 }
 
-func holdOperationLock(t *testing.T, filename string) (*lockfile.Lock, *bool) {
-	t.Helper()
-	guard, err := lockfile.Acquire(context.Background(), filename, "concurrency test", 0)
-	if err != nil {
-		t.Fatalf("hold operation lock: %v", err)
-	}
-	released := new(bool)
-	t.Cleanup(func() {
-		if !*released {
-			_ = guard.Release()
-		}
-	})
-	return guard, released
-}
-
-func releaseOperationLock(t *testing.T, guard *lockfile.Lock, released *bool) {
-	t.Helper()
-	if err := guard.Release(); err != nil {
-		t.Fatalf("release operation lock: %v", err)
-	}
-	*released = true
-}
-
-func startCLI(t *testing.T, binary, root string, args ...string) *cliProcess {
+func startCLI(t *testing.T, binary, root string, hooks processHooks, args ...string) *cliProcess {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = root
+	cmd.Env = append(os.Environ(),
+		"FRIGO_TEST_SYNC_DIR="+hooks.syncDir,
+		"FRIGO_TEST_PAUSE="+strings.Join(hooks.pause, ","),
+		"FRIGO_TEST_FAIL="+strings.Join(hooks.fail, ","),
+	)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	process := &cliProcess{cmd: cmd, done: make(chan struct{})}
+	process := &cliProcess{cmd: cmd, done: make(chan struct{}), syncDir: hooks.syncDir}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start frigo %v: %v", args, err)
 	}
@@ -177,17 +216,151 @@ func startCLI(t *testing.T, binary, root string, args ...string) *cliProcess {
 	return process
 }
 
-func assertProcessesBlocked(t *testing.T, processes ...*cliProcess) {
+func assertSerializedContenders(t *testing.T, lockPath string, contenders ...contender) {
 	t.Helper()
-	timer := time.NewTimer(750 * time.Millisecond)
-	defer timer.Stop()
-	<-timer.C
-	for _, process := range processes {
+	if len(contenders) != 2 {
+		t.Fatalf("contender count = %d, want 2", len(contenders))
+	}
+
+	states := waitForContentionStates(t, contenders)
+	loaded := make([]contender, 0, len(contenders))
+	for _, candidate := range contenders {
+		if states[candidate.process] == candidate.checkpoint {
+			loaded = append(loaded, candidate)
+		}
+	}
+	if len(loaded) != 1 {
+		t.Errorf("mutual exclusion violated: %d contenders entered vulnerable windows before either could finish", len(loaded))
+		for _, candidate := range loaded {
+			continueProcess(t, candidate.process, candidate.checkpoint)
+		}
+		for _, candidate := range contenders {
+			assertProcessSuccess(t, candidate.process)
+		}
+		return
+	}
+
+	first := loaded[0]
+	assertLockOwner(t, lockPath, first.process)
+	continueProcess(t, first.process, first.checkpoint)
+	assertProcessSuccess(t, first.process)
+
+	var second contender
+	for _, candidate := range contenders {
+		if candidate.process != first.process {
+			second = candidate
+			break
+		}
+	}
+	waitForProcessEvent(t, second.process, second.checkpoint)
+	assertLockOwner(t, lockPath, second.process)
+	continueProcess(t, second.process, second.checkpoint)
+	assertProcessSuccess(t, second.process)
+}
+
+func waitForContentionStates(t *testing.T, contenders []contender) map[*cliProcess]string {
+	t.Helper()
+	deadline := time.NewTimer(15 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	states := make(map[*cliProcess]string, len(contenders))
+
+	for len(states) < len(contenders) {
+		for _, candidate := range contenders {
+			if eventExists(t, candidate.process, candidate.checkpoint) {
+				states[candidate.process] = candidate.checkpoint
+				continue
+			}
+			if _, found := states[candidate.process]; !found && eventExists(t, candidate.process, lockContended) {
+				states[candidate.process] = lockContended
+			}
+			select {
+			case <-candidate.process.done:
+				if _, found := states[candidate.process]; !found {
+					t.Fatalf("frigo exited before synchronization event: err=%v stdout=%q stderr=%q", candidate.process.result.err, candidate.process.result.stdout, candidate.process.result.stderr)
+				}
+			default:
+			}
+		}
+		if len(states) == len(contenders) {
+			return states
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for contender synchronization states: %v", states)
+		case <-ticker.C:
+		}
+	}
+	return states
+}
+
+func waitForProcessEvent(t *testing.T, process *cliProcess, name string) {
+	t.Helper()
+	deadline := time.NewTimer(15 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if eventExists(t, process, name) {
+			return
+		}
 		select {
 		case <-process.done:
-			t.Fatalf("frigo exited while operation lock was held: err=%v stdout=%q stderr=%q", process.result.err, process.result.stdout, process.result.stderr)
-		default:
+			t.Fatalf("frigo exited before event %q: err=%v stdout=%q stderr=%q", name, process.result.err, process.result.stdout, process.result.stderr)
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for process %d event %q", process.cmd.Process.Pid, name)
+		case <-ticker.C:
 		}
+	}
+}
+
+func eventExists(t *testing.T, process *cliProcess, name string) bool {
+	t.Helper()
+	_, err := os.Stat(syncPath(process, "event", name))
+	if err == nil {
+		return true
+	}
+	if !os.IsNotExist(err) {
+		t.Fatalf("stat process event %q: %v", name, err)
+	}
+	return false
+}
+
+func continueProcess(t *testing.T, process *cliProcess, name string) {
+	t.Helper()
+	if err := os.WriteFile(syncPath(process, "continue", name), nil, 0o600); err != nil {
+		t.Fatalf("continue process %d at %q: %v", process.cmd.Process.Pid, name, err)
+	}
+}
+
+func syncPath(process *cliProcess, kind, name string) string {
+	return filepath.Join(process.syncDir, fmt.Sprintf("%s.%d.%s", kind, process.cmd.Process.Pid, name))
+}
+
+func assertLockOwner(t *testing.T, filename string, process *cliProcess) {
+	t.Helper()
+	contents, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatalf("read operation lock: %v", err)
+	}
+	var owner struct {
+		PID int `json:"pid"`
+	}
+	if err := json.Unmarshal(contents, &owner); err != nil {
+		t.Fatalf("decode operation lock: %v", err)
+	}
+	if owner.PID != process.cmd.Process.Pid {
+		t.Fatalf("operation lock owner pid = %d, want contender pid %d", owner.PID, process.cmd.Process.Pid)
+	}
+}
+
+func assertProcessRunning(t *testing.T, process *cliProcess, checkpoint string) {
+	t.Helper()
+	select {
+	case <-process.done:
+		t.Fatalf("frigo exited while paused at %s: err=%v stdout=%q stderr=%q", checkpoint, process.result.err, process.result.stdout, process.result.stderr)
+	default:
 	}
 }
 
@@ -197,6 +370,21 @@ func assertProcessSuccess(t *testing.T, process *cliProcess) {
 	case <-process.done:
 		if process.result.err != nil || process.result.stderr != "" {
 			t.Fatalf("frigo process: err=%v stdout=%q stderr=%q", process.result.err, process.result.stdout, process.result.stderr)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("frigo process did not finish")
+	}
+}
+
+func assertProcessFailure(t *testing.T, process *cliProcess, want string) {
+	t.Helper()
+	select {
+	case <-process.done:
+		if process.result.err == nil {
+			t.Fatalf("frigo process succeeded, want failure containing %q: stdout=%q stderr=%q", want, process.result.stdout, process.result.stderr)
+		}
+		if !strings.Contains(process.result.stderr, want) {
+			t.Fatalf("frigo failure stderr = %q, want %q", process.result.stderr, want)
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("frigo process did not finish")
