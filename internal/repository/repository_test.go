@@ -18,6 +18,16 @@ func TestDiscoverUsesFrigoHistoryNames(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	wantGitDir := filepath.Join(root, ".git")
+	if repo.CommonFrigoDir != filepath.Join(wantGitDir, "frigo") {
+		t.Fatalf("CommonFrigoDir = %q", repo.CommonFrigoDir)
+	}
+	if repo.LinkedStoresDir != filepath.Join(wantGitDir, "worktrees") {
+		t.Fatalf("LinkedStoresDir = %q", repo.LinkedStoresDir)
+	}
+	if repo.WorktreeIDPath != filepath.Join(wantGitDir, "frigo-id") {
+		t.Fatalf("WorktreeIDPath = %q", repo.WorktreeIDPath)
+	}
 	if got, want := repo.RegistryPath, filepath.Join(repo.FrigoDir, "registry.json"); got != want {
 		t.Fatalf("RegistryPath = %q, want %q", got, want)
 	}
@@ -55,6 +65,15 @@ func TestDiscoverNormalRepository(t *testing.T) {
 	if repo.CommonDir != wantGitDir {
 		t.Fatalf("CommonDir = %q, want %q", repo.CommonDir, wantGitDir)
 	}
+	if repo.CommonFrigoDir != filepath.Join(wantGitDir, "frigo") {
+		t.Fatalf("CommonFrigoDir = %q", repo.CommonFrigoDir)
+	}
+	if repo.LinkedStoresDir != filepath.Join(wantGitDir, "worktrees") {
+		t.Fatalf("LinkedStoresDir = %q", repo.LinkedStoresDir)
+	}
+	if repo.WorktreeIDPath != filepath.Join(wantGitDir, "frigo-id") {
+		t.Fatalf("WorktreeIDPath = %q", repo.WorktreeIDPath)
+	}
 	if repo.FrigoDir != filepath.Join(wantGitDir, "frigo") {
 		t.Fatalf("FrigoDir = %q", repo.FrigoDir)
 	}
@@ -84,6 +103,63 @@ func TestDiscoverNormalRepository(t *testing.T) {
 	}
 }
 
+func TestWithFrigoDirRebasesSelectedStoreOnly(t *testing.T) {
+	root := testrepo.Init(t)
+	repo, err := Discover(context.Background(), git.Client{Path: "git"}, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	selected := filepath.Join(repo.CommonFrigoDir, "worktree-1234")
+	rebased := repo.WithFrigoDir(selected)
+
+	if repo.FrigoDir != filepath.Join(repo.GitDir, "frigo") {
+		t.Fatalf("original FrigoDir = %q", repo.FrigoDir)
+	}
+	if rebased.Root != repo.Root {
+		t.Fatalf("Root = %q, want %q", rebased.Root, repo.Root)
+	}
+	if rebased.GitDir != repo.GitDir {
+		t.Fatalf("GitDir = %q, want %q", rebased.GitDir, repo.GitDir)
+	}
+	if rebased.CommonDir != repo.CommonDir {
+		t.Fatalf("CommonDir = %q, want %q", rebased.CommonDir, repo.CommonDir)
+	}
+	if rebased.CommonFrigoDir != repo.CommonFrigoDir {
+		t.Fatalf("CommonFrigoDir = %q, want %q", rebased.CommonFrigoDir, repo.CommonFrigoDir)
+	}
+	if rebased.LinkedStoresDir != repo.LinkedStoresDir {
+		t.Fatalf("LinkedStoresDir = %q, want %q", rebased.LinkedStoresDir, repo.LinkedStoresDir)
+	}
+	if rebased.WorktreeIDPath != repo.WorktreeIDPath {
+		t.Fatalf("WorktreeIDPath = %q, want %q", rebased.WorktreeIDPath, repo.WorktreeIDPath)
+	}
+	if rebased.ExcludePath != repo.ExcludePath {
+		t.Fatalf("ExcludePath = %q, want %q", rebased.ExcludePath, repo.ExcludePath)
+	}
+	if rebased.OperationLockPath != repo.OperationLockPath {
+		t.Fatalf("OperationLockPath = %q, want %q", rebased.OperationLockPath, repo.OperationLockPath)
+	}
+	if rebased.FrigoDir != selected {
+		t.Fatalf("FrigoDir = %q, want %q", rebased.FrigoDir, selected)
+	}
+	if rebased.HistoryDir != filepath.Join(selected, "history.git") {
+		t.Fatalf("HistoryDir = %q", rebased.HistoryDir)
+	}
+	if rebased.RegistryPath != filepath.Join(selected, "registry.json") {
+		t.Fatalf("RegistryPath = %q", rebased.RegistryPath)
+	}
+	if rebased.AttributesPath != filepath.Join(selected, "attributes") {
+		t.Fatalf("AttributesPath = %q", rebased.AttributesPath)
+	}
+	if rebased.PrivateAttributesPath != filepath.Join(selected, "history.git", "info", "attributes") {
+		t.Fatalf("PrivateAttributesPath = %q", rebased.PrivateAttributesPath)
+	}
+	if rebased.HooksDir != filepath.Join(selected, "hooks") {
+		t.Fatalf("HooksDir = %q", rebased.HooksDir)
+	}
+}
+
 func TestDiscoverLinkedWorktreeUsesWorktreeLocalState(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is required")
@@ -105,6 +181,15 @@ func TestDiscoverLinkedWorktreeUsesWorktreeLocalState(t *testing.T) {
 	}
 	if repo.CommonDir != filepath.Join(root, ".git") {
 		t.Fatalf("CommonDir = %q, want %q", repo.CommonDir, filepath.Join(root, ".git"))
+	}
+	if repo.CommonFrigoDir != filepath.Join(root, ".git", "frigo") {
+		t.Fatalf("CommonFrigoDir = %q", repo.CommonFrigoDir)
+	}
+	if repo.LinkedStoresDir != filepath.Join(root, ".git", "worktrees") {
+		t.Fatalf("LinkedStoresDir = %q", repo.LinkedStoresDir)
+	}
+	if repo.WorktreeIDPath != filepath.Join(repo.GitDir, "frigo-id") {
+		t.Fatalf("WorktreeIDPath = %q, want under worktree-local GitDir", repo.WorktreeIDPath)
 	}
 	if repo.GitDir == repo.CommonDir {
 		t.Fatalf("GitDir = CommonDir = %q for linked worktree", repo.GitDir)

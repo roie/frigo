@@ -14,6 +14,9 @@ type Repository struct {
 	Root                  string
 	GitDir                string
 	CommonDir             string
+	CommonFrigoDir        string
+	LinkedStoresDir       string
+	WorktreeIDPath        string
 	FrigoDir              string
 	HistoryDir            string
 	RegistryPath          string
@@ -56,22 +59,33 @@ func Discover(ctx context.Context, client git.Client, start string) (Repository,
 	root = filepath.Clean(root)
 	gitDir := resolveGitPath(root, gitDirRaw)
 	commonDir := resolveGitPath(root, commonDirRaw)
-	frigoDir := filepath.Join(gitDir, "frigo")
 
-	return Repository{
-		Root:                  root,
-		GitDir:                gitDir,
-		CommonDir:             commonDir,
-		FrigoDir:              frigoDir,
-		HistoryDir:            filepath.Join(frigoDir, "history.git"),
-		RegistryPath:          filepath.Join(frigoDir, "registry.json"),
-		ExcludePath:           filepath.Join(commonDir, "info", "exclude"),
-		OperationLockPath:     filepath.Join(commonDir, "frigo.lock"),
-		AttributesPath:        filepath.Join(frigoDir, "attributes"),
-		PrivateAttributesPath: filepath.Join(frigoDir, "history.git", "info", "attributes"),
-		HooksDir:              filepath.Join(frigoDir, "hooks"),
-		LinkedWorktree:        gitDir != commonDir,
-	}, nil
+	repo := Repository{
+		Root:              root,
+		GitDir:            gitDir,
+		CommonDir:         commonDir,
+		CommonFrigoDir:    filepath.Join(commonDir, "frigo"),
+		LinkedStoresDir:   filepath.Join(commonDir, "worktrees"),
+		WorktreeIDPath:    filepath.Join(gitDir, "frigo-id"),
+		ExcludePath:       filepath.Join(commonDir, "info", "exclude"),
+		OperationLockPath: filepath.Join(commonDir, "frigo.lock"),
+		LinkedWorktree:    gitDir != commonDir,
+	}
+
+	repo = repo.WithFrigoDir(filepath.Join(gitDir, "frigo"))
+	return repo, nil
+}
+
+// WithFrigoDir returns a copy with all selected-store paths derived from dir.
+func (r Repository) WithFrigoDir(dir string) Repository {
+	selected := filepath.Clean(dir)
+	r.FrigoDir = selected
+	r.HistoryDir = filepath.Join(selected, "history.git")
+	r.RegistryPath = filepath.Join(selected, "registry.json")
+	r.AttributesPath = filepath.Join(selected, "attributes")
+	r.PrivateAttributesPath = filepath.Join(selected, "history.git", "info", "attributes")
+	r.HooksDir = filepath.Join(selected, "hooks")
+	return r
 }
 
 func resolveGitPath(root, value string) string {
