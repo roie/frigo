@@ -30,7 +30,7 @@ Usage:
 
 Commands:
   add      Assign existing untracked paths to frigo.
-  release  Release exact ownership in the current worktree without deleting files or history, or every owned root with --all.
+  release  Release exact ownership in the current worktree without deleting files or history; other Git ignore rules may still hide it, or every owned root with --all.
   status   Show main-repository and frigo working-tree status.
   list     List exact ownership roots; ls is an alias.
   diff     Show owned changes against frigo HEAD.

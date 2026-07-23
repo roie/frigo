@@ -68,7 +68,7 @@ jobs:
           echo "$prefix/bin" >> "$GITHUB_PATH"
 
       - name: Verify Git 2.23.0
-        run: git --version
+        run: test "$(git --version)" = "git version 2.23.0"
 
       - name: Run Git 2.23 compatibility tests
         env:

@@ -296,8 +296,8 @@ frigo release PLAN.md
 Releasing a path:
 
 - keeps the physical file in place;
-- removes only frigo's managed-path exclusion for it;
-- makes it visible to the main Git repository again;
+- removes only Frigo ownership and Frigo-managed exclusion for it;
+- other Git ignore rules may still hide it from the main Git repository;
 - preserves its existing frigo history.
 
 `frigo release --all` releases every path owned by the current worktree.
