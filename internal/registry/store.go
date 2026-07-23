@@ -5,6 +5,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 func (r Registry) validate() error {
@@ -58,6 +59,9 @@ func validatePaths(paths []string) error {
 }
 
 func validatePath(candidate string) error {
+	if !utf8.ValidString(candidate) {
+		return fmt.Errorf("%q is not a valid UTF-8 path", candidate)
+	}
 	if candidate == "" || candidate == "." || strings.HasPrefix(candidate, "/") {
 		return fmt.Errorf("invalid path %q", candidate)
 	}

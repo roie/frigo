@@ -21,6 +21,35 @@ func TestLoadRejectsTrailingJSON(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsInvalidRawUTF8(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), "registry.json")
+	data := []byte{'{', '"', 'v', 'e', 'r', 's', 'i', 'o', 'n', '"', ':', '1', ',', '"', 'p', 'a', 't', 'h', 's', '"', ':', '[', '"', 'b', 'a', 'd', '-', 0xff, '"', ']', '}'}
+	if err := os.WriteFile(filename, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(filename)
+	if err == nil || !strings.Contains(err.Error(), "registry is not valid UTF-8") {
+		t.Fatalf("Load error = %v", err)
+	}
+}
+
+func TestLoadPreservesReplacementCharacterPath(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), "registry.json")
+	data := []byte(`{"version":1,"paths":["bad-�.md"]}`)
+	if err := os.WriteFile(filename, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(filename)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !slices.Equal(loaded.Paths, []string{"bad-�.md"}) {
+		t.Fatalf("loaded Paths = %#v", loaded.Paths)
+	}
+}
+
 func TestAddParentReplacesOwnedChildren(t *testing.T) {
 	owned := Registry{Version: CurrentVersion, Paths: []string{"docs/local/a", "docs/local/b"}}
 	result, err := owned.Add("docs/local")

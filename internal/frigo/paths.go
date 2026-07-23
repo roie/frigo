@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/roie/frigo/internal/registry"
 )
@@ -144,6 +145,9 @@ func (w *Workspace) normalizePath(raw string, requireExist bool) (string, error)
 		return "", fmt.Errorf("the worktree root cannot be managed as one frigo path")
 	}
 	relative = filepath.ToSlash(relative)
+	if !utf8.ValidString(relative) {
+		return "", fmt.Errorf("%q is not a valid UTF-8 path", raw)
+	}
 	if relative == ".git" || strings.HasPrefix(relative, ".git/") {
 		return "", fmt.Errorf("Git metadata cannot be managed by frigo")
 	}

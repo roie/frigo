@@ -1,12 +1,14 @@
 package registry
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"sort"
+	"unicode/utf8"
 
 	"github.com/roie/frigo/internal/atomicfile"
 )
@@ -37,13 +39,15 @@ func New() Registry {
 }
 
 func Load(filename string) (Registry, error) {
-	file, err := os.Open(filename)
+	data, err := os.ReadFile(filename)
 	if err != nil {
 		return Registry{}, err
 	}
-	defer file.Close()
+	if !utf8.Valid(data) {
+		return Registry{}, fmt.Errorf("registry is not valid UTF-8")
+	}
 
-	decoder := json.NewDecoder(file)
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var owned Registry
 	if err := decoder.Decode(&owned); err != nil {
