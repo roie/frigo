@@ -366,7 +366,7 @@ func TestCommitRejectsStaleHistoryBase(t *testing.T) {
 	}
 	testrepo.Write(t, root, "PLAN.md", "stale contender\n")
 
-	stale := NewWorkspace(ws.repo, concurrentUpdateGitClient(t, ws.repo.HistoryDir, winner, base), root)
+	stale := NewWorkspace(ws.repo, concurrentHeadChangeGitClient(t, ws.repo.HistoryDir, winner, base), root)
 	_, commitErr := stale.Commit(context.Background(), CommitOptions{Message: "stale", All: true})
 	if commitErr == nil || !strings.Contains(commitErr.Error(), "frigo history changed concurrently; retry the commit") {
 		t.Errorf("Commit() error = %v, want concurrent history error", commitErr)
@@ -377,6 +377,13 @@ func TestCommitRejectsStaleHistoryBase(t *testing.T) {
 	}
 	if got != winner {
 		t.Errorf("HEAD = %s, want winning commit %s", got, winner)
+	}
+	winnerContents, err := ws.privateOutput(context.Background(), ws.git, "show", "HEAD:PLAN.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if winnerContents != "winner" {
+		t.Errorf("HEAD:PLAN.md = %q, want winner", winnerContents)
 	}
 }
 
@@ -393,7 +400,7 @@ func TestConcurrentUnbornCommit(t *testing.T) {
 	}
 	testrepo.Write(t, root, "PLAN.md", "stale contender\n")
 
-	stale := NewWorkspace(ws.repo, concurrentUpdateGitClient(t, ws.repo.HistoryDir, winner, ""), root)
+	stale := NewWorkspace(ws.repo, concurrentHeadChangeGitClient(t, ws.repo.HistoryDir, winner, ""), root)
 	_, commitErr := stale.Commit(context.Background(), CommitOptions{Message: "stale", All: true})
 	if commitErr == nil || !strings.Contains(commitErr.Error(), "frigo history changed concurrently; retry the commit") {
 		t.Errorf("Commit() error = %v, want concurrent history error", commitErr)
@@ -404,6 +411,67 @@ func TestConcurrentUnbornCommit(t *testing.T) {
 	}
 	if got != winner {
 		t.Errorf("HEAD = %s, want winning commit %s", got, winner)
+	}
+	winnerContents, err := ws.privateOutput(context.Background(), ws.git, "show", "HEAD:PLAN.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if winnerContents != "winner" {
+		t.Errorf("HEAD:PLAN.md = %q, want winner", winnerContents)
+	}
+}
+
+func TestCommitRejectsHistoryBaseDeletedConcurrently(t *testing.T) {
+	ws, root := committedWorkspace(t, "PLAN.md", "base\n")
+	base, err := ws.privateOutput(context.Background(), ws.git, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	testrepo.Write(t, root, "PLAN.md", "stale contender\n")
+
+	stale := NewWorkspace(ws.repo, concurrentHeadChangeGitClient(t, ws.repo.HistoryDir, "", base), root)
+	_, commitErr := stale.Commit(context.Background(), CommitOptions{Message: "stale", All: true})
+	if commitErr == nil || !strings.Contains(commitErr.Error(), "frigo history changed concurrently; retry the commit") {
+		t.Errorf("Commit() error = %v, want concurrent history error", commitErr)
+	}
+	current, err := ws.resolveHistoryBase(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Exists {
+		t.Errorf("HEAD = %s, want unborn history after concurrent deletion", current.OID)
+	}
+}
+
+func TestCommitKeepsUpdateRefPermissionFailureGeneric(t *testing.T) {
+	ws, root := committedWorkspace(t, "PLAN.md", "base\n")
+	base, err := ws.privateOutput(context.Background(), ws.git, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	testrepo.Write(t, root, "PLAN.md", "contender\n")
+
+	failing := NewWorkspace(ws.repo, failingGitClientWithStderr(t, ws.repo.HistoryDir, "update-ref", "HEAD", "permission denied"), root)
+	_, commitErr := failing.Commit(context.Background(), CommitOptions{Message: "contender", All: true})
+	if commitErr == nil || !strings.Contains(commitErr.Error(), "update frigo HEAD") {
+		t.Fatalf("Commit() error = %v, want generic update error", commitErr)
+	}
+	if strings.Contains(commitErr.Error(), "frigo history changed concurrently") {
+		t.Errorf("Commit() error = %v, do not want concurrent history error", commitErr)
+	}
+	if !strings.Contains(commitErr.Error(), "permission denied") {
+		t.Errorf("Commit() error = %v, want underlying permission error", commitErr)
+	}
+	var commandErr *gitpkg.CommandError
+	if !errors.As(commitErr, &commandErr) {
+		t.Errorf("Commit() error = %v, want wrapped git command error", commitErr)
+	}
+	got, err := ws.privateOutput(context.Background(), ws.git, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != base {
+		t.Errorf("HEAD = %s, want unchanged base %s", got, base)
 	}
 }
 

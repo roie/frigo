@@ -107,22 +107,14 @@ func (w *Workspace) commitLocked(ctx context.Context, options CommitOptions) (Co
 	if result.Committed {
 		expected := base.OID
 		if _, err := w.privateOutput(ctx, w.git, "update-ref", "HEAD", commit, expected); err != nil {
-			if isStaleHistoryUpdate(err) {
+			current, inspectErr := w.resolveHistoryBase(ctx)
+			if inspectErr == nil && current != base {
 				return CommitResult{}, fmt.Errorf("frigo history changed concurrently; retry the commit: %w", err)
 			}
 			return CommitResult{}, fmt.Errorf("update frigo HEAD: %w", err)
 		}
 	}
 	return result, nil
-}
-
-func isStaleHistoryUpdate(err error) bool {
-	var commandErr *git.CommandError
-	if !errors.As(err, &commandErr) {
-		return false
-	}
-	return strings.Contains(commandErr.Stderr, "but expected") ||
-		strings.Contains(commandErr.Stderr, "reference already exists")
 }
 
 func (w *Workspace) commitPaths(options CommitOptions, owned registry.Registry) ([]string, error) {

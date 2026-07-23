@@ -1143,6 +1143,11 @@ func assertNoTemporaryIndexes(t *testing.T, ws *Workspace) {
 
 func failingGitClient(t *testing.T, failGitDir, failCommand, failArg string) gitpkg.Client {
 	t.Helper()
+	return failingGitClientWithStderr(t, failGitDir, failCommand, failArg, "forced git failure")
+}
+
+func failingGitClientWithStderr(t *testing.T, failGitDir, failCommand, failArg, stderr string) gitpkg.Client {
+	t.Helper()
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Skip("git is required")
@@ -1168,7 +1173,7 @@ func failingGitClient(t *testing.T, failGitDir, failCommand, failArg string) git
 		"    fi\n" +
 		"  done\n" +
 		"  if [ \"$seen_command\" = 1 ] && [ \"$seen_arg\" = 1 ]; then\n" +
-		"    echo 'forced git failure' >&2\n" +
+		"    printf '%s\\n' \"${FRIGO_FAIL_STDERR}\" >&2\n" +
 		"    exit 42\n" +
 		"  fi\n" +
 		"fi\n" +
@@ -1181,10 +1186,11 @@ func failingGitClient(t *testing.T, failGitDir, failCommand, failArg string) git
 		"FRIGO_FAIL_GIT_DIR="+failGitDir,
 		"FRIGO_FAIL_COMMAND="+failCommand,
 		"FRIGO_FAIL_ARG="+failArg,
+		"FRIGO_FAIL_STDERR="+stderr,
 	)
 }
 
-func concurrentUpdateGitClient(t *testing.T, historyDir, winner, expected string) gitpkg.Client {
+func concurrentHeadChangeGitClient(t *testing.T, historyDir, winner, expected string) gitpkg.Client {
 	t.Helper()
 	realGit, err := exec.LookPath("git")
 	if err != nil {
@@ -1200,7 +1206,11 @@ func concurrentUpdateGitClient(t *testing.T, historyDir, winner, expected string
 		"  if [ \"$arg\" = HEAD ]; then seen_head=1; fi\n" +
 		"done\n" +
 		"if [ \"$seen_update_ref\" = 1 ] && [ \"$seen_head\" = 1 ]; then\n" +
-		"  \"${FRIGO_REAL_GIT}\" --git-dir=\"${FRIGO_HISTORY_DIR}\" update-ref HEAD \"${FRIGO_WINNER}\" \"${FRIGO_EXPECTED}\"\n" +
+		"  if [ \"${FRIGO_WINNER}\" = \"\" ]; then\n" +
+		"    \"${FRIGO_REAL_GIT}\" --git-dir=\"${FRIGO_HISTORY_DIR}\" update-ref -d HEAD \"${FRIGO_EXPECTED}\"\n" +
+		"  else\n" +
+		"    \"${FRIGO_REAL_GIT}\" --git-dir=\"${FRIGO_HISTORY_DIR}\" update-ref HEAD \"${FRIGO_WINNER}\" \"${FRIGO_EXPECTED}\"\n" +
+		"  fi\n" +
 		"fi\n" +
 		"exec \"${FRIGO_REAL_GIT}\" \"$@\"\n"
 	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
