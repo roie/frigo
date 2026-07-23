@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+
+	"github.com/roie/frigo/internal/testexec"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -266,10 +268,6 @@ func TestDiffShowsNewOwnedFileWithoutPersistentIndex(t *testing.T) {
 }
 
 func TestPrivateAttributesPreserveBytesAndDiff(t *testing.T) {
-	if os.PathSeparator == '\\' {
-		t.Skip("shell filters are not supported on Windows")
-	}
-
 	t.Run("existing history", func(t *testing.T) {
 		ws, root := newWorkspace(t)
 		runPrivateAttributesScenario(t, ws, root, false)
@@ -1124,10 +1122,7 @@ func runPrivateAttributesScenario(t *testing.T, ws *Workspace, root string, init
 	if err := os.WriteFile(filepath.Join(root, "filter-sentinel.txt"), []byte("safe\n"), 0o644); err != nil {
 		t.Fatalf("write filter sentinel: %v", err)
 	}
-	script := filepath.Join(root, "filter-pass-through.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf 'ran\\n' >>"+shellSingleQuote(filepath.Join(root, "filter-sentinel.txt"))+"\ncat\n"), 0o755); err != nil {
-		t.Fatalf("write filter script: %v", err)
-	}
+	script := testexec.Build(t)
 	testrepo.Run(t, root, "config", "filter.frigo-test.clean", script)
 	testrepo.Run(t, root, "config", "filter.frigo-test.smudge", script)
 	testrepo.Write(t, root, ".gitattributes", "root.txt text eol=crlf filter=frigo-test ident -diff\n")
@@ -1235,10 +1230,6 @@ func utf16LE(text string) []byte {
 	return data
 }
 
-func shellSingleQuote(text string) string {
-	return "'" + strings.ReplaceAll(text, "'", `'"'"'`) + "'"
-}
-
 func assertNoPersistentIndex(t *testing.T, ws *Workspace) {
 	t.Helper()
 	if _, err := os.Stat(filepath.Join(ws.repo.HistoryDir, "index")); !os.IsNotExist(err) {
@@ -1268,36 +1259,7 @@ func failingGitClientWithStderr(t *testing.T, failGitDir, failCommand, failArg, 
 	if err != nil {
 		t.Skip("git is required")
 	}
-	wrapper := filepath.Join(t.TempDir(), "git-wrapper")
-	script := "#!/bin/sh\n" +
-		"set -eu\n" +
-		"match_dir=0\n" +
-		"if [ \"${FRIGO_FAIL_GIT_DIR:-}\" = \"\" ]; then\n" +
-		"  match_dir=1\n" +
-		"elif [ \"${1-}\" = \"--git-dir=${FRIGO_FAIL_GIT_DIR}\" ]; then\n" +
-		"  match_dir=1\n" +
-		"fi\n" +
-		"if [ \"$match_dir\" = 1 ]; then\n" +
-		"  seen_command=0\n" +
-		"  seen_arg=0\n" +
-		"  for arg in \"$@\"; do\n" +
-		"    if [ \"$arg\" = \"${FRIGO_FAIL_COMMAND:-}\" ]; then\n" +
-		"      seen_command=1\n" +
-		"    fi\n" +
-		"    if [ \"${FRIGO_FAIL_ARG:-}\" = \"\" ] || [ \"$arg\" = \"${FRIGO_FAIL_ARG}\" ]; then\n" +
-		"      seen_arg=1\n" +
-		"    fi\n" +
-		"  done\n" +
-		"  if [ \"$seen_command\" = 1 ] && [ \"$seen_arg\" = 1 ]; then\n" +
-		"    printf '%s\\n' \"${FRIGO_FAIL_STDERR}\" >&2\n" +
-		"    exit 42\n" +
-		"  fi\n" +
-		"fi\n" +
-		"exec \"${FRIGO_REAL_GIT}\" \"$@\"\n"
-	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return gitpkg.Client{Path: wrapper}.WithEnv(
+	return gitpkg.Client{Path: testexec.Build(t)}.WithEnv(
 		"FRIGO_REAL_GIT="+realGit,
 		"FRIGO_FAIL_GIT_DIR="+failGitDir,
 		"FRIGO_FAIL_COMMAND="+failCommand,
@@ -1312,27 +1274,7 @@ func concurrentHeadChangeGitClient(t *testing.T, historyDir, winner, expected st
 	if err != nil {
 		t.Skip("git is required")
 	}
-	wrapper := filepath.Join(t.TempDir(), "git-concurrent-update-wrapper")
-	script := "#!/bin/sh\n" +
-		"set -eu\n" +
-		"seen_update_ref=0\n" +
-		"seen_head=0\n" +
-		"for arg in \"$@\"; do\n" +
-		"  if [ \"$arg\" = update-ref ]; then seen_update_ref=1; fi\n" +
-		"  if [ \"$arg\" = HEAD ]; then seen_head=1; fi\n" +
-		"done\n" +
-		"if [ \"$seen_update_ref\" = 1 ] && [ \"$seen_head\" = 1 ]; then\n" +
-		"  if [ \"${FRIGO_WINNER}\" = \"\" ]; then\n" +
-		"    \"${FRIGO_REAL_GIT}\" --git-dir=\"${FRIGO_HISTORY_DIR}\" update-ref -d HEAD \"${FRIGO_EXPECTED}\"\n" +
-		"  else\n" +
-		"    \"${FRIGO_REAL_GIT}\" --git-dir=\"${FRIGO_HISTORY_DIR}\" update-ref HEAD \"${FRIGO_WINNER}\" \"${FRIGO_EXPECTED}\"\n" +
-		"  fi\n" +
-		"fi\n" +
-		"exec \"${FRIGO_REAL_GIT}\" \"$@\"\n"
-	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return gitpkg.Client{Path: wrapper}.WithEnv(
+	return gitpkg.Client{Path: testexec.Build(t)}.WithEnv(
 		"FRIGO_REAL_GIT="+realGit,
 		"FRIGO_HISTORY_DIR="+historyDir,
 		"FRIGO_WINNER="+winner,

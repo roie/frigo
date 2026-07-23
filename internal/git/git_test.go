@@ -2,11 +2,10 @@ package git
 
 import (
 	"context"
-	"os"
-	"os/exec"
 	"strings"
 	"testing"
 
+	"github.com/roie/frigo/internal/testexec"
 	"github.com/roie/frigo/internal/testrepo"
 )
 
@@ -64,8 +63,7 @@ func TestVersionAtLeast(t *testing.T) {
 func TestCheckMinimumRejectsOldGit(t *testing.T) {
 	t.Parallel()
 
-	path := writeExecutable(t, "git", "#!/bin/sh\necho 'git version 2.22.9'\n")
-	client := Client{Path: path}
+	client := stubClient(t, "FRIGO_OUTPUT=git version 2.22.9\n")
 	err := CheckMinimum(context.Background(), client, Version{Major: 2, Minor: 23, Patch: 0})
 	if err == nil {
 		t.Fatal("CheckMinimum() error = nil, want error")
@@ -78,8 +76,7 @@ func TestCheckMinimumRejectsOldGit(t *testing.T) {
 func TestClientReportsExitCodeAndStderr(t *testing.T) {
 	t.Parallel()
 
-	path := writeExecutable(t, "git", "#!/bin/sh\necho 'bad command' >&2\nexit 7\n")
-	client := Client{Path: path}
+	client := stubClient(t, "FRIGO_STDERR=bad command\n", "FRIGO_EXIT_CODE=7")
 	_, err := client.Output(context.Background(), "", "status")
 	if err == nil {
 		t.Fatal("Output() error = nil, want error")
@@ -112,8 +109,7 @@ func TestOutputRemovesExactlyOneTerminalLFOrCRLF(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			path := writeExecutable(t, "git", "#!/bin/sh\nprintf '%s' \"$FRIGO_OUTPUT\"\n")
-			client := Client{Path: path}.WithEnv("FRIGO_OUTPUT=" + tt.output)
+			client := stubClient(t, "FRIGO_OUTPUT="+tt.output)
 			got, err := client.Output(context.Background(), "")
 			if err != nil {
 				t.Fatalf("Output() error = %v", err)
@@ -135,14 +131,7 @@ func TestRunAgainstRealRepo(t *testing.T) {
 	}
 }
 
-func writeExecutable(t *testing.T, name, content string) string {
+func stubClient(t *testing.T, env ...string) Client {
 	t.Helper()
-	if _, err := exec.LookPath("sh"); err != nil {
-		t.Skip("sh is required for this test")
-	}
-	path := t.TempDir() + "/" + name
-	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
-		t.Fatalf("write executable: %v", err)
-	}
-	return path
+	return Client{Path: testexec.Build(t)}.WithEnv(env...)
 }
