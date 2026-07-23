@@ -270,6 +270,7 @@ frigo restore PLAN.md docs/local/
 ```
 
 The files are restored from the latest frigo commit.
+Files that were never saved to frigo stay in place, including inside managed directories.
 
 Be careful: current uncommitted changes to those paths will be lost.
 
@@ -284,7 +285,7 @@ frigo release PLAN.md
 Releasing a path:
 
 - keeps the physical file in place;
-- removes it from frigo's active managed paths;
+- removes only frigo's managed-path exclusion for it;
 - makes it visible to the main Git repository again;
 - preserves its existing frigo history.
 
@@ -377,6 +378,10 @@ frigo does not install agent-specific instructions or modify files such as `AGEN
 ## Limitations
 
 frigo is convenience tooling, not a security boundary. Deliberate force-adds, direct index changes, or modified ignore rules can bypass it.
+
+### Linked worktree cleanup can be destructive in v0.1
+
+In v0.1, removing a linked worktree can delete ignored frigo-managed files and the local frigo history stored with that worktree.
 
 ### frigo history is local
 

@@ -7,9 +7,9 @@ import (
 	"os"
 	"sort"
 
+	"github.com/roie/frigo/internal/frigo"
 	gitpkg "github.com/roie/frigo/internal/git"
 	"github.com/roie/frigo/internal/repository"
-	"github.com/roie/frigo/internal/frigo"
 )
 
 var minimumGitVersion = gitpkg.Version{Major: 2, Minor: 23, Patch: 0}
