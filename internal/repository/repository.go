@@ -11,16 +11,17 @@ import (
 
 // Repository describes the main Git worktree and frigo's local metadata paths.
 type Repository struct {
-	Root           string
-	GitDir         string
-	CommonDir      string
-	FrigoDir       string
-	HistoryDir     string
-	RegistryPath   string
-	ExcludePath    string
-	AttributesPath string
-	HooksDir       string
-	LinkedWorktree bool
+	Root                  string
+	GitDir                string
+	CommonDir             string
+	FrigoDir              string
+	HistoryDir            string
+	RegistryPath          string
+	ExcludePath           string
+	AttributesPath        string
+	PrivateAttributesPath string
+	HooksDir              string
+	LinkedWorktree        bool
 }
 
 // Discover finds the containing non-bare Git worktree from start.
@@ -57,16 +58,17 @@ func Discover(ctx context.Context, client git.Client, start string) (Repository,
 	frigoDir := filepath.Join(gitDir, "frigo")
 
 	return Repository{
-		Root:           root,
-		GitDir:         gitDir,
-		CommonDir:      commonDir,
-		FrigoDir:       frigoDir,
-		HistoryDir:     filepath.Join(frigoDir, "history.git"),
-		RegistryPath:   filepath.Join(frigoDir, "registry.json"),
-		ExcludePath:    filepath.Join(commonDir, "info", "exclude"),
-		AttributesPath: filepath.Join(frigoDir, "attributes"),
-		HooksDir:       filepath.Join(frigoDir, "hooks"),
-		LinkedWorktree: gitDir != commonDir,
+		Root:                  root,
+		GitDir:                gitDir,
+		CommonDir:             commonDir,
+		FrigoDir:              frigoDir,
+		HistoryDir:            filepath.Join(frigoDir, "history.git"),
+		RegistryPath:          filepath.Join(frigoDir, "registry.json"),
+		ExcludePath:           filepath.Join(commonDir, "info", "exclude"),
+		AttributesPath:        filepath.Join(frigoDir, "attributes"),
+		PrivateAttributesPath: filepath.Join(frigoDir, "history.git", "info", "attributes"),
+		HooksDir:              filepath.Join(frigoDir, "hooks"),
+		LinkedWorktree:        gitDir != commonDir,
 	}, nil
 }
 

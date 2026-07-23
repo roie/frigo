@@ -24,6 +24,9 @@ func TestDiscoverUsesFrigoHistoryNames(t *testing.T) {
 	if got, want := repo.HistoryDir, filepath.Join(repo.FrigoDir, "history.git"); got != want {
 		t.Fatalf("HistoryDir = %q, want %q", got, want)
 	}
+	if repo.PrivateAttributesPath != filepath.Join(repo.HistoryDir, "info", "attributes") {
+		t.Fatalf("PrivateAttributesPath = %q", repo.PrivateAttributesPath)
+	}
 }
 
 func TestDiscoverNormalRepository(t *testing.T) {
@@ -67,6 +70,9 @@ func TestDiscoverNormalRepository(t *testing.T) {
 	if repo.AttributesPath != filepath.Join(repo.FrigoDir, "attributes") {
 		t.Fatalf("AttributesPath = %q, want under FrigoDir", repo.AttributesPath)
 	}
+	if repo.PrivateAttributesPath != filepath.Join(repo.HistoryDir, "info", "attributes") {
+		t.Fatalf("PrivateAttributesPath = %q, want under HistoryDir", repo.PrivateAttributesPath)
+	}
 	if repo.HooksDir != filepath.Join(repo.FrigoDir, "hooks") {
 		t.Fatalf("HooksDir = %q, want under FrigoDir", repo.HooksDir)
 	}
@@ -105,6 +111,9 @@ func TestDiscoverLinkedWorktreeUsesWorktreeLocalState(t *testing.T) {
 	}
 	if repo.AttributesPath != filepath.Join(repo.FrigoDir, "attributes") {
 		t.Fatalf("AttributesPath = %q, want under worktree-local FrigoDir", repo.AttributesPath)
+	}
+	if repo.PrivateAttributesPath != filepath.Join(repo.HistoryDir, "info", "attributes") {
+		t.Fatalf("PrivateAttributesPath = %q, want under HistoryDir", repo.PrivateAttributesPath)
 	}
 	if repo.HooksDir != filepath.Join(repo.FrigoDir, "hooks") {
 		t.Fatalf("HooksDir = %q, want under worktree-local FrigoDir", repo.HooksDir)

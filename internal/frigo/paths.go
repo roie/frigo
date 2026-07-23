@@ -69,6 +69,9 @@ func (w *Workspace) validateHistory(ctx context.Context) error {
 	if !strings.EqualFold(bare, "true") {
 		return fmt.Errorf("frigo history is not bare")
 	}
+	if err := w.ensurePrivateAttributes(); err != nil {
+		return fmt.Errorf("ensure frigo private attributes: %w", err)
+	}
 	return nil
 }
 

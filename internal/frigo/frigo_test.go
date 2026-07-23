@@ -2,6 +2,7 @@ package frigo
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf16"
 
 	gitpkg "github.com/roie/frigo/internal/git"
 	"github.com/roie/frigo/internal/ignore"
@@ -261,6 +263,22 @@ func TestDiffShowsNewOwnedFileWithoutPersistentIndex(t *testing.T) {
 
 	assertNoPersistentIndex(t, ws)
 	assertNoTemporaryIndexes(t, ws)
+}
+
+func TestPrivateAttributesPreserveBytesAndDiff(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("shell filters are not supported on Windows")
+	}
+
+	t.Run("existing history", func(t *testing.T) {
+		ws, root := newWorkspace(t)
+		runPrivateAttributesScenario(t, ws, root, false)
+	})
+
+	t.Run("new history", func(t *testing.T) {
+		ws, root := newBareWorkspace(t)
+		runPrivateAttributesScenario(t, ws, root, true)
+	})
 }
 
 func TestCommitSelectedPathLeavesOtherOwnedChangeUncommitted(t *testing.T) {
@@ -963,6 +981,138 @@ func syncIgnoreForTest(t *testing.T, ws *Workspace) {
 	if err := ignore.Sync(ws.repo, owned); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func runPrivateAttributesScenario(t *testing.T, ws *Workspace, root string, initialize bool) {
+	t.Helper()
+
+	const rootPath = "root.txt"
+	const nestedPath = "nested/encoded.txt"
+
+	rootOriginal := []byte("root line 1\r\n$Id$\r\nTAIL")
+	rootChanged := []byte("root line 1\r\n$Id$\r\nCHANGED")
+	nestedOriginal := utf16LE("nested line 1\nTAIL")
+	nestedChanged := utf16LE("nested changed\nTAIL")
+
+	if err := os.MkdirAll(filepath.Join(root, "nested"), 0o755); err != nil {
+		t.Fatalf("create nested directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "filter-sentinel.txt"), []byte("safe\n"), 0o644); err != nil {
+		t.Fatalf("write filter sentinel: %v", err)
+	}
+	script := filepath.Join(root, "filter-pass-through.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf 'ran\\n' >>"+shellSingleQuote(filepath.Join(root, "filter-sentinel.txt"))+"\ncat\n"), 0o755); err != nil {
+		t.Fatalf("write filter script: %v", err)
+	}
+	testrepo.Run(t, root, "config", "filter.frigo-test.clean", script)
+	testrepo.Run(t, root, "config", "filter.frigo-test.smudge", script)
+	testrepo.Write(t, root, ".gitattributes", "root.txt text eol=crlf filter=frigo-test ident -diff\n")
+	testrepo.Write(t, root, filepath.Join("nested", ".gitattributes"), "encoded.txt working-tree-encoding=UTF-16LE\n")
+	if err := os.WriteFile(filepath.Join(root, rootPath), rootOriginal, 0o644); err != nil {
+		t.Fatalf("write root file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, nestedPath), nestedOriginal, 0o644); err != nil {
+		t.Fatalf("write nested file: %v", err)
+	}
+
+	if initialize {
+		result, err := ws.Add(context.Background(), []string{rootPath, nestedPath})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result.Added) != 2 || !slices.Contains(result.Added, rootPath) || !slices.Contains(result.Added, nestedPath) {
+			t.Fatalf("Add() added = %v, want both %s and %s", result.Added, rootPath, nestedPath)
+		}
+	} else {
+		ownForTest(t, ws, rootPath, nestedPath)
+	}
+
+	result, err := ws.Commit(context.Background(), CommitOptions{All: true, Message: "save private attributes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Committed || result.Commit == "" {
+		t.Fatalf("Commit() = %+v, want committed result", result)
+	}
+
+	assertBlobBytes(t, ws, rootPath, rootOriginal)
+	assertBlobBytes(t, ws, nestedPath, nestedOriginal)
+
+	if err := os.WriteFile(filepath.Join(root, rootPath), rootChanged, 0o644); err != nil {
+		t.Fatalf("rewrite root file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, nestedPath), nestedChanged, 0o644); err != nil {
+		t.Fatalf("rewrite nested file: %v", err)
+	}
+
+	diff, err := ws.Diff(context.Background(), []string{rootPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(diff, "Binary files differ") {
+		t.Fatalf("diff = %q", diff)
+	}
+	if !strings.Contains(diff, "@@") {
+		t.Fatalf("diff = %q", diff)
+	}
+	if !strings.Contains(diff, "CHANGED") {
+		t.Fatalf("diff = %q", diff)
+	}
+
+	restored, err := ws.Restore(context.Background(), []string{rootPath, nestedPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRestored := []string{rootPath, nestedPath}
+	slices.Sort(restored)
+	slices.Sort(wantRestored)
+	if !slices.Equal(restored, wantRestored) {
+		t.Fatalf("Restore() = %v, want [%s %s]", restored, rootPath, nestedPath)
+	}
+
+	assertFileBytes(t, root, rootPath, rootOriginal)
+	assertFileBytes(t, root, nestedPath, nestedOriginal)
+	if got := testrepo.Read(t, root, "filter-sentinel.txt"); got != "safe\n" {
+		t.Fatalf("filter sentinel = %q, want unchanged safe sentinel", got)
+	}
+
+	assertNoPersistentIndex(t, ws)
+	assertNoTemporaryIndexes(t, ws)
+}
+
+func assertBlobBytes(t *testing.T, ws *Workspace, path string, want []byte) {
+	t.Helper()
+	got, err := ws.privateOutput(context.Background(), ws.git, "show", "HEAD:"+path)
+	if err != nil {
+		t.Fatalf("show %s: %v", path, err)
+	}
+	if !slices.Equal([]byte(got), want) {
+		t.Fatalf("blob %s = %x, want %x", path, []byte(got), want)
+	}
+}
+
+func assertFileBytes(t *testing.T, root, rel string, want []byte) {
+	t.Helper()
+	got, err := os.ReadFile(filepath.Join(root, rel))
+	if err != nil {
+		t.Fatalf("read %s: %v", rel, err)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("file %s = %x, want %x", rel, got, want)
+	}
+}
+
+func utf16LE(text string) []byte {
+	encoded := utf16.Encode([]rune(text))
+	data := make([]byte, len(encoded)*2)
+	for i, r := range encoded {
+		binary.LittleEndian.PutUint16(data[i*2:], r)
+	}
+	return data
+}
+
+func shellSingleQuote(text string) string {
+	return "'" + strings.ReplaceAll(text, "'", `'"'"'`) + "'"
 }
 
 func assertNoPersistentIndex(t *testing.T, ws *Workspace) {

@@ -108,6 +108,9 @@ func (w *Workspace) initialize(ctx context.Context) error {
 	if _, err := w.git.Output(ctx, "", "init", "--bare", "--quiet", w.repo.HistoryDir); err != nil {
 		return fmt.Errorf("initialize frigo history: %w", err)
 	}
+	if err := w.ensurePrivateAttributes(); err != nil {
+		return fmt.Errorf("initialize frigo private attributes: %w", err)
+	}
 	for _, config := range [][2]string{
 		{"core.hooksPath", w.repo.HooksDir},
 		{"core.attributesFile", w.repo.AttributesPath},
