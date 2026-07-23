@@ -26,7 +26,7 @@ func (w *Workspace) ensureLayout(ctx context.Context, allowCreate bool) error {
 
 	legacy := filepath.Join(w.repo.GitDir, "frigo")
 	if _, err := os.Lstat(legacy); err == nil {
-		return fmt.Errorf("unsupported pre-v0.2 linked-worktree metadata at %s; use Frigo v0.1 to release it before using Frigo v0.2", legacy)
+		return fmt.Errorf("unsupported pre-v0.2 linked-worktree metadata at %s", legacy)
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect pre-v0.2 linked-worktree metadata: %w", err)
 	}

@@ -47,6 +47,11 @@ Requirements:
 - An existing Git repository
 - Git 2.23 or newer on `PATH`
 
+Supported platforms:
+
+- Linux, macOS, and Windows
+- amd64 and arm64
+
 ## Quick start
 
 Add a file to frigo:
@@ -255,6 +260,11 @@ frigo log
 
 This shows commits from frigo's separate history, not commits from the main repository.
 
+## Doctor and repair
+
+frigo doctor is read-only. It reports metadata problems and never mutates anything by default.
+frigo doctor --repair prints the complete plan first, then applies only bounded repairs that are unambiguous and safe.
+
 ## Restore files
 
 Discard uncommitted changes to a managed file:
@@ -270,6 +280,7 @@ frigo restore PLAN.md docs/local/
 ```
 
 The files are restored from the latest frigo commit.
+frigo restore writes back the exact bytes from the latest frigo commit.
 Files that were never saved to frigo stay in place, including inside managed directories.
 
 Be careful: current uncommitted changes to those paths will be lost.
@@ -289,6 +300,7 @@ Releasing a path:
 - makes it visible to the main Git repository again;
 - preserves its existing frigo history.
 
+`frigo release --all` releases every path owned by the current worktree.
 frigo refuses to release a path with uncommitted frigo changes.
 
 Re-adding a previously released path resumes its existing frigo history; earlier commits are not removed.
@@ -339,6 +351,8 @@ leave frigo-managed files out of the main repository.
 
 Specifically, frigo writes managed paths to `.git/info/exclude`, or to the equivalent `$GIT_COMMON_DIR/info/exclude` when Git uses shared metadata, such as with linked worktrees. Git provides this for repository-specific files that should remain local instead of being shared through `.gitignore`.
 
+Linked worktrees keep their frigo history under `$GIT_COMMON_DIR/frigo/worktrees/<frigo-id>/`, so the history stays with the shared Git metadata even if the linked worktree directory is removed. The main worktree keeps its existing `.git/frigo` history. If frigo finds pre-v0.2 linked metadata, it reports it as unsupported and leaves it untouched.
+
 No Git hooks are installed. No daemon runs in the background. No shared configuration file is added to the project.
 
 ## Why not `.gitignore`?
@@ -379,9 +393,13 @@ frigo does not install agent-specific instructions or modify files such as `AGEN
 
 frigo is convenience tooling, not a security boundary. Deliberate force-adds, direct index changes, or modified ignore rules can bypass it.
 
-### Linked worktree cleanup can be destructive in v0.1
+### Linked worktree removal can bypass frigo
 
-In v0.1, removing a linked worktree can delete ignored frigo-managed files and the local frigo history stored with that worktree.
+Frigo-owned lifecycle locks are a practical boundary, not a security boundary.
+
+- ordinary `git worktree remove` is blocked when Git considers the worktree unsafe to remove;
+- `git worktree remove --force` still respects Frigo's owned lifecycle lock;
+- `git worktree remove --force --force` can remove a locked worktree, so the shared history remains the recovery point.
 
 ### frigo history is local
 
@@ -401,9 +419,15 @@ frigo is not a backup service.
 
 frigo protects files from ordinary main-repository staging and commit workflows.
 
-Repository ignore rules can conflict with frigo's local rules. frigo validates managed paths during its commands and reports detected conflicts, but later changes outside frigo can still alter the effective Git behavior.
+Repository ignore rules can conflict with frigo's local rules. frigo validates managed paths during its commands and reports detected conflicts, but later changes outside frigo can still alter the effective Git behavior. frigo only manages its own exclusion boundary.
 
 Review the main repository's staged diff before committing sensitive files.
+
+### UTF-8 and U+FFFD
+
+frigo rejects invalid UTF-8 path bytes before metadata changes. It also rejects raw registry bytes that are not valid UTF-8 before decoding JSON.
+
+If a path appears as U+FFFD, frigo reports that it may be a real filename or a historical replacement artifact and does not guess the original bytes or rewrite it automatically.
 
 ### frigo is not secret storage
 
@@ -439,7 +463,7 @@ go build -trimpath -o frigo ./cmd/frigo
 npm uninstall -g frigo
 ```
 
-This removes only the command. Existing frigo history and local ignore entries remain unchanged.
+This removes only the command. Existing frigo history and local ignore entries remain unchanged, so it is a safe uninstall.
 
 Do not delete frigo's project metadata directly. Managed paths may remain excluded from the main repository.
 

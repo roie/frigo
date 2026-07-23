@@ -30,7 +30,7 @@ Usage:
 
 Commands:
   add      Assign existing untracked paths to frigo.
-  release  Release exact ownership without deleting files or history, or every owned root with --all.
+  release  Release exact ownership in the current worktree without deleting files or history, or every owned root with --all.
   status   Show main-repository and frigo working-tree status.
   list     List exact ownership roots; ls is an alias.
   diff     Show owned changes against frigo HEAD.
@@ -38,6 +38,10 @@ Commands:
   log      Show frigo commit history.
   restore  Restore saved owned paths from frigo HEAD.
   doctor   Diagnose metadata, or apply bounded repairs with --repair.
+
+Notes:
+  doctor --repair prints a complete repair plan before mutation.
+  release --all applies only to the current worktree.
 
 Use -- before paths beginning with '-'. frigo has no persistent staging area.`)
 }
@@ -48,6 +52,7 @@ func printCommandUsage(output io.Writer, command string) {
 		fmt.Fprintln(output, "Usage: frigo add [--] <path>...")
 	case "release":
 		fmt.Fprintln(output, "Usage: frigo release [--all] [--force] [--] <path>...")
+		fmt.Fprintln(output, "release --all applies only to the current worktree.")
 	case "status":
 		fmt.Fprintln(output, "Usage: frigo status")
 	case "list":
@@ -67,6 +72,7 @@ func printCommandUsage(output io.Writer, command string) {
 		fmt.Fprintln(output, "Usage: frigo restore [--] <path>...")
 	case "doctor":
 		fmt.Fprintln(output, "Usage: frigo doctor [--repair]")
+		fmt.Fprintln(output, "doctor --repair prints a complete repair plan before mutation.")
 	}
 }
 
