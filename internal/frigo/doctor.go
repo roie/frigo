@@ -16,6 +16,7 @@ import (
 	"github.com/roie/frigo/internal/metadata"
 	"github.com/roie/frigo/internal/registry"
 	"github.com/roie/frigo/internal/repository"
+	"github.com/roie/frigo/internal/testsync"
 )
 
 // DoctorOptions controls bounded doctor repairs. Diagnosis is read-only unless
@@ -53,13 +54,20 @@ type doctorStore struct {
 	valid    bool
 }
 
+type doctorPointerEvidence struct {
+	path         string
+	checkoutRoot string
+	live         bool
+}
+
 type doctorState struct {
-	repo        repository.Repository
-	selected    *doctorStore
-	registry    registry.Registry
-	hasRegistry bool
-	stores      []doctorStore
-	issues      []DoctorIssue
+	repo            repository.Repository
+	selected        *doctorStore
+	registry        registry.Registry
+	hasRegistry     bool
+	stores          []doctorStore
+	pointerEvidence map[string][]doctorPointerEvidence
+	issues          []DoctorIssue
 }
 
 // Doctor diagnoses Frigo metadata while holding the common operation lock. If
@@ -100,13 +108,32 @@ func (w *Workspace) DoctorWithPlan(ctx context.Context, options DoctorOptions, b
 		}
 	}
 	for _, action := range result.Planned {
-		if err := w.applyDoctorAction(ctx, action); err != nil {
-			return result, fmt.Errorf("apply doctor action %s at %s: %w", action.Code, action.Path, err)
+		changed, applyErr := w.applyDoctorAction(ctx, action)
+		if changed {
+			result.Applied = append(result.Applied, action)
 		}
-		result.Applied = append(result.Applied, action)
+		if applyErr != nil {
+			issues, diagnosisErr := w.rerunDoctorDiagnosisLocked(ctx)
+			result.Issues = issues
+			return result, errors.Join(
+				fmt.Errorf("apply doctor action %s at %s: %w", action.Code, action.Path, applyErr),
+				wrapOptional("rerun doctor diagnosis", diagnosisErr),
+			)
+		}
 	}
-	result.Issues = sortedDoctorIssues(w.diagnoseDoctorLocked(ctx).issues)
+	issues, diagnosisErr := w.rerunDoctorDiagnosisLocked(ctx)
+	result.Issues = issues
+	if diagnosisErr != nil {
+		return result, fmt.Errorf("rerun doctor diagnosis: %w", diagnosisErr)
+	}
 	return result, nil
+}
+
+func (w *Workspace) rerunDoctorDiagnosisLocked(ctx context.Context) ([]DoctorIssue, error) {
+	if err := testsync.Fail("doctor-rediagnosis"); err != nil {
+		return nil, err
+	}
+	return sortedDoctorIssues(w.diagnoseDoctorLocked(ctx).issues), nil
 }
 
 func (w *Workspace) diagnoseDoctorLocked(ctx context.Context) doctorState {
@@ -121,14 +148,14 @@ func (w *Workspace) diagnoseDoctorLocked(ctx context.Context) doctorState {
 	}
 
 	state.stores = w.inspectDoctorStores(&state)
-	pointerRoots := w.inspectDoctorPointerRoots()
+	state.pointerEvidence = w.inspectDoctorPointerRoots()
 	for _, store := range state.stores {
 		if !store.valid {
 			continue
 		}
-		checkoutRoot, ok := pointerRoots[store.id]
-		if !ok || checkoutRoot != store.manifest.WorktreePath {
-			state.add("orphan-store", store.path, "stable store has no exact live checkout, admin, pointer, and manifest association", false)
+		evidence := state.pointerEvidence[store.id]
+		if len(evidence) != 1 || !evidence[0].live || evidence[0].checkoutRoot != store.manifest.WorktreePath {
+			state.add("orphan-store", store.path, "stable store has no unique exact live checkout, admin, pointer, and manifest association", false)
 		}
 	}
 
@@ -241,12 +268,12 @@ func inspectDoctorMetadataFile(state *doctorState, filename, label string) ([]by
 	return data, true
 }
 
-func (w *Workspace) inspectDoctorPointerRoots() map[string]string {
-	roots := make(map[string]string)
+func (w *Workspace) inspectDoctorPointerRoots() map[string][]doctorPointerEvidence {
+	evidenceByID := make(map[string][]doctorPointerEvidence)
 	adminRoot := filepath.Join(w.repo.CommonDir, "worktrees")
 	entries, err := os.ReadDir(adminRoot)
 	if err != nil {
-		return roots
+		return evidenceByID
 	}
 	for _, entry := range entries {
 		adminPath := filepath.Join(adminRoot, entry.Name())
@@ -254,24 +281,27 @@ func (w *Workspace) inspectDoctorPointerRoots() map[string]string {
 		if statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			continue
 		}
-		checkoutGitFile, ok := readDoctorRelationshipPath(filepath.Join(adminPath, "gitdir"), "")
+		pointerPath := filepath.Join(adminPath, "frigo-id")
+		id, ok := loadDoctorPointer(pointerPath)
 		if !ok {
 			continue
 		}
-		checkoutGitFile = resolveDoctorRelationshipPath(adminPath, checkoutGitFile)
-		if filepath.Base(checkoutGitFile) != ".git" {
-			continue
+		evidence := doctorPointerEvidence{path: pointerPath}
+		checkoutGitFile, relationshipOK := readDoctorRelationshipPath(filepath.Join(adminPath, "gitdir"), "")
+		if relationshipOK {
+			checkoutGitFile = resolveDoctorRelationshipPath(adminPath, checkoutGitFile)
+			if filepath.Base(checkoutGitFile) == ".git" {
+				checkoutRoot := filepath.Clean(filepath.Dir(checkoutGitFile))
+				adminFromCheckout, reciprocalOK := readDoctorRelationshipPath(checkoutGitFile, "gitdir: ")
+				if reciprocalOK && resolveDoctorRelationshipPath(checkoutRoot, adminFromCheckout) == filepath.Clean(adminPath) {
+					evidence.checkoutRoot = checkoutRoot
+					evidence.live = true
+				}
+			}
 		}
-		checkoutRoot := filepath.Clean(filepath.Dir(checkoutGitFile))
-		adminFromCheckout, ok := readDoctorRelationshipPath(checkoutGitFile, "gitdir: ")
-		if !ok || resolveDoctorRelationshipPath(checkoutRoot, adminFromCheckout) != filepath.Clean(adminPath) {
-			continue
-		}
-		if id, ok := loadDoctorPointer(filepath.Join(adminPath, "frigo-id")); ok {
-			roots[id] = checkoutRoot
-		}
+		evidenceByID[id] = append(evidenceByID[id], evidence)
 	}
-	return roots
+	return evidenceByID
 }
 
 func readDoctorRelationshipPath(filename, prefix string) (string, bool) {
@@ -314,6 +344,10 @@ func (state *doctorState) selectLinkedDoctorStore() {
 		matches := state.storesForRoot(state.repo.Root)
 		switch len(matches) {
 		case 1:
+			if len(state.pointerEvidence[matches[0].id]) != 0 {
+				state.add("association-ambiguous", pointerPath, "stable store has conflicting live or stale admin-pointer evidence", false)
+				return
+			}
 			state.selected = &matches[0]
 			state.add("association-pointer-missing", pointerPath, "one stable store unambiguously claims this worktree", true)
 		case 0:
@@ -339,6 +373,9 @@ func (state *doctorState) selectLinkedDoctorStore() {
 		state.add("metadata-invalid-utf8", pointerPath, "pointer is not valid UTF-8", false)
 		return
 	}
+	if bytes.Contains(data, []byte("\ufffd")) {
+		state.add("metadata-replacement-character", pointerPath, "pointer contains Unicode replacement character U+FFFD", false)
+	}
 	id, loadErr := metadata.LoadPointer(pointerPath)
 	if loadErr != nil {
 		state.add("metadata-malformed", pointerPath, loadErr.Error(), false)
@@ -362,9 +399,22 @@ func (state *doctorState) selectLinkedDoctorStore() {
 	state.add("association-store-missing", pointerPath, fmt.Sprintf("pointer references missing or invalid store %s", id), false)
 	matches := state.storesForRoot(state.repo.Root)
 	if len(matches) == 1 {
+		if len(state.pointerEvidence[matches[0].id]) != 0 {
+			state.add("association-ambiguous", pointerPath, "stable store has conflicting live or stale admin-pointer evidence", false)
+			return
+		}
 		state.add("association-pointer-mismatch", pointerPath, "one different stable store unambiguously claims this worktree", true)
 		state.selected = &matches[0]
 	}
+}
+
+func (state *doctorState) hasRepairableAction(action DoctorAction) bool {
+	for _, issue := range state.issues {
+		if issue.Repairable && issue.Code == action.Code && filepath.Clean(issue.Path) == filepath.Clean(action.Path) {
+			return true
+		}
+	}
+	return false
 }
 
 func (state *doctorState) storesForRoot(root string) []doctorStore {
@@ -635,35 +685,46 @@ func buildDoctorPlan(issues []DoctorIssue) []DoctorAction {
 	return actions
 }
 
-func (w *Workspace) applyDoctorAction(ctx context.Context, action DoctorAction) error {
+func (w *Workspace) applyDoctorAction(ctx context.Context, action DoctorAction) (bool, error) {
 	state := w.diagnoseDoctorLocked(ctx)
+	if !state.hasRepairableAction(action) {
+		return false, nil
+	}
+	if w.doctorActionHook != nil {
+		if err := w.doctorActionHook(action.Code); err != nil {
+			return false, err
+		}
+	}
 	switch action.Code {
 	case "association-pointer-missing", "association-pointer-mismatch":
 		matches := state.storesForRoot(w.repo.Root)
-		if len(matches) != 1 {
-			return fmt.Errorf("pointer association is no longer unambiguous")
+		if len(matches) != 1 || len(state.pointerEvidence[matches[0].id]) != 0 {
+			return false, fmt.Errorf("pointer association is no longer unambiguous")
 		}
 		if action.Code == "association-pointer-missing" {
 			if err := savePointerExclusive(w.repo.WorktreeIDPath, matches[0].id); err != nil {
-				return err
+				return false, err
 			}
-			return nil
+			return true, nil
 		}
 		info, err := os.Lstat(w.repo.WorktreeIDPath)
 		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			return fmt.Errorf("existing pointer is not a regular file")
+			return false, fmt.Errorf("existing pointer is not a regular file")
 		}
 		currentID, err := metadata.LoadPointer(w.repo.WorktreeIDPath)
 		if err != nil {
-			return fmt.Errorf("existing pointer is malformed: %w", err)
+			return false, fmt.Errorf("existing pointer is malformed: %w", err)
 		}
 		if currentID == matches[0].id {
-			return nil
+			return false, nil
 		}
-		return metadata.SavePointer(w.repo.WorktreeIDPath, matches[0].id)
+		if err := metadata.SavePointer(w.repo.WorktreeIDPath, matches[0].id); err != nil {
+			return false, err
+		}
+		return true, nil
 	case "attributes-public", "attributes-private":
 		if state.selected == nil {
-			return fmt.Errorf("current Frigo store is not exactly selected")
+			return false, fmt.Errorf("current Frigo store is not exactly selected")
 		}
 		selectedRepo := w.repo.WithFrigoDir(state.selected.path)
 		expectedPath := selectedRepo.AttributesPath
@@ -673,68 +734,75 @@ func (w *Workspace) applyDoctorAction(ctx context.Context, action DoctorAction) 
 			expected = []byte(privateAttributes)
 		}
 		if filepath.Clean(action.Path) != filepath.Clean(expectedPath) {
-			return fmt.Errorf("attributes action path changed")
+			return false, fmt.Errorf("attributes action path changed")
 		}
 		changed, err := ensureManagedFile(expectedPath, expected, 0o600, true)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if !changed {
 			contents, err := os.ReadFile(expectedPath)
 			if err != nil {
-				return fmt.Errorf("read attributes repair postcondition: %w", err)
+				return false, fmt.Errorf("read attributes repair postcondition: %w", err)
 			}
 			if !bytes.Equal(contents, expected) {
-				return fmt.Errorf("attributes repair postcondition failed")
+				return false, fmt.Errorf("attributes repair postcondition failed")
 			}
 		}
-		return nil
+		return changed, nil
 	case "exclusions-stale":
 		if state.selected == nil || !state.hasRegistry {
-			return fmt.Errorf("current registry is not exactly selected")
+			return false, fmt.Errorf("current registry is not exactly selected")
 		}
-		return ignore.Sync(state.repo, state.registry)
+		if err := ignore.Sync(state.repo, state.registry); err != nil {
+			return false, err
+		}
+		return true, nil
 	case "lifecycle-lock-missing", "lifecycle-lock-unowned":
 		if state.selected == nil || state.selected.manifest.ID == "" {
-			return fmt.Errorf("linked association is not exact")
+			return false, fmt.Errorf("linked association is not exact")
 		}
 		protected := *w
 		protected.repo = state.repo
 		created, err := protected.ensureWorktreeProtection(ctx, state.selected.manifest.ID)
 		if err != nil {
-			return err
+			return false, err
 		}
-		if action.Code == "lifecycle-lock-unowned" && created {
-			// The exact lock disappeared after planning; acquiring and recording a
-			// new owned lock is still the bounded safe postcondition.
-			return nil
+		if action.Code == "lifecycle-lock-missing" && !created {
+			return false, fmt.Errorf("missing lifecycle lock was not created")
 		}
-		return nil
+		return true, nil
 	case "lifecycle-lock-stale":
 		if state.selected == nil || state.selected.manifest.ID == "" || !state.hasRegistry || len(state.registry.Paths) != 0 {
-			return fmt.Errorf("stale lifecycle ownership is no longer exactly proven")
+			return false, fmt.Errorf("stale lifecycle ownership is no longer exactly proven")
 		}
 		protected := *w
 		protected.repo = state.repo
 		manifest, err := protected.proveLinkedAssociation(ctx, state.selected.manifest.ID)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if !manifest.LockOwned {
-			return fmt.Errorf("manifest no longer records lifecycle lock ownership")
+			return false, fmt.Errorf("manifest no longer records lifecycle lock ownership")
 		}
 		lock, err := protected.inspectWorktreeLock(ctx)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if lock.exists {
 			if !lock.matches(worktreeLockReason(manifest.ID)) {
-				return fmt.Errorf("lifecycle lock is no longer exactly owned")
+				return false, fmt.Errorf("lifecycle lock is no longer exactly owned")
 			}
-			return protected.releaseOwnedWorktreeLock(ctx)
+			if err := protected.releaseOwnedWorktreeLock(ctx); err != nil {
+				return false, err
+			}
+			return true, nil
 		}
-		return protected.persistLockOwnership(manifest, false, "doctor-stale-lock-before-owned-save", "doctor-stale-lock-owned-save")
+		if err := protected.persistLockOwnership(manifest, false, "doctor-stale-lock-before-owned-save", "doctor-stale-lock-owned-save"); err != nil {
+			return false, err
+		}
+		return true, nil
 	default:
-		return fmt.Errorf("unsupported repair action")
+		return false, fmt.Errorf("unsupported repair action")
 	}
 }

@@ -12,12 +12,13 @@ import (
 )
 
 type Workspace struct {
-	repo            repository.Repository
-	git             git.Client
-	baseDir         string
-	lockWait        time.Duration
-	linkedStoreHook func(string) error
-	lifecycleHook   func(string) error
+	repo             repository.Repository
+	git              git.Client
+	baseDir          string
+	lockWait         time.Duration
+	linkedStoreHook  func(string) error
+	lifecycleHook    func(string) error
+	doctorActionHook func(string) error
 }
 
 func NewWorkspace(repo repository.Repository, client git.Client, baseDir string) *Workspace {

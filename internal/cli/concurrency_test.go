@@ -28,6 +28,7 @@ const (
 	releaseRollbackComplete = "release-rollback-complete"
 	lockContended           = "lock-contended"
 	excludeSync             = "exclude-sync"
+	doctorRediagnosis       = "doctor-rediagnosis"
 )
 
 type cliProcessResult struct {
@@ -159,6 +160,35 @@ func TestConcurrentCLIRepositoryOperations(t *testing.T) {
 		assertRegistryPaths(t, linkedRegistryPath(t, linkedRepo), "linked.local")
 		assertExcludePatterns(t, mainRepo.ExcludePath, "main.local", "linked.local")
 	})
+}
+
+func TestDoctorCLIPrintsCompletedActionsBeforeApplyFailure(t *testing.T) {
+	binary := buildCLI(t)
+	root := testrepo.Init(t)
+	testrepo.Write(t, root, "private.txt", "private\n")
+	runCLI(t, binary, root, "add", "private.txt")
+	repo := discoverRepository(t, root)
+	if err := os.Remove(repo.PrivateAttributesPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(repo.ExcludePath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	process := startCLI(t, binary, root, processHooks{fail: []string{excludeSync, doctorRediagnosis}}, "doctor", "--repair")
+	assertProcessFailure(t, process, "apply doctor action exclusions-stale")
+	if !strings.Contains(process.result.stderr, "rerun doctor diagnosis") || !strings.Contains(process.result.stderr, "induced test failure at doctor-rediagnosis") {
+		t.Fatalf("doctor failure did not join rediagnosis error: %q", process.result.stderr)
+	}
+	planAttributes := strings.Index(process.result.stdout, "plan attributes-private ")
+	planExclusions := strings.Index(process.result.stdout, "plan exclusions-stale ")
+	appliedAttributes := strings.Index(process.result.stdout, "applied attributes-private ")
+	if planAttributes < 0 || planExclusions < 0 || appliedAttributes < 0 || planAttributes >= planExclusions || planExclusions >= appliedAttributes {
+		t.Fatalf("doctor output does not print the complete plan then completed outcome before failure:\n%s", process.result.stdout)
+	}
+	if got, err := os.ReadFile(repo.PrivateAttributesPath); err != nil || string(got) != "* -text !eol !filter -ident !working-tree-encoding !diff\n" {
+		t.Fatalf("completed private attributes repair = %q, %v", got, err)
+	}
 }
 
 func buildCLI(t *testing.T) string {

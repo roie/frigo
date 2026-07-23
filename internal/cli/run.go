@@ -173,11 +173,11 @@ func runAt(ctx context.Context, args []string, stdin io.Reader, stdout, stderr i
 			}
 			return nil
 		})
-		if err != nil {
-			return printError(stderr, err)
-		}
 		for _, action := range result.Applied {
 			fmt.Fprintf(stdout, "applied %s %q: %s\n", action.Code, action.Path, action.Description)
+		}
+		if err != nil {
+			return printError(stderr, err)
 		}
 		if len(result.Issues) == 0 {
 			fmt.Fprintln(stdout, "ok")

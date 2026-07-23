@@ -1,6 +1,7 @@
 package ignore
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -217,6 +218,35 @@ func TestSyncUsesLivePointersWithoutFollowingSymlinkedCommonStore(t *testing.T) 
 	}
 	if strings.Contains(string(contents), "symlinked-main.txt") {
 		t.Fatalf("exclude followed symlinked common store: %q", contents)
+	}
+}
+
+func TestCheckAndSyncRejectSymlinkedExcludeParent(t *testing.T) {
+	root := testrepo.Init(t)
+	repo := discoverRepository(t, root)
+	externalInfo := filepath.Join(root, "external-info")
+	if err := os.Rename(filepath.Dir(repo.ExcludePath), externalInfo); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(externalInfo, filepath.Dir(repo.ExcludePath)); err != nil {
+		t.Fatal(err)
+	}
+	externalExclude := filepath.Join(externalInfo, "exclude")
+	foreign := []byte("foreign-before\n")
+	if err := os.WriteFile(externalExclude, foreign, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	owned := registry.Registry{Version: registry.CurrentVersion, Paths: []string{"PLAN.md"}}
+
+	if _, err := Check(repo, owned); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("Check() error = %v, want symlinked-parent rejection", err)
+	}
+	if err := Sync(repo, owned); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("Sync() error = %v, want symlinked-parent rejection", err)
+	}
+	contents, err := os.ReadFile(externalExclude)
+	if err != nil || !bytes.Equal(contents, foreign) {
+		t.Fatalf("external exclude = %q, %v; want unchanged %q", contents, err, foreign)
 	}
 }
 

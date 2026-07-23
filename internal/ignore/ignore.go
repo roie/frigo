@@ -55,6 +55,9 @@ func LiteralPattern(candidate string) (string, error) {
 // Check reports whether frigo's managed section in the common info/exclude
 // file exactly matches the live registry union without changing the file.
 func Check(repo repository.Repository, owned registry.Registry) (bool, error) {
+	if err := validateExcludePath(repo); err != nil {
+		return false, fmt.Errorf("validate Git exclude path: %w", err)
+	}
 	paths, err := unionPaths(repo, owned)
 	if err != nil {
 		return false, fmt.Errorf("collect frigo exclude paths: %w", err)
@@ -81,6 +84,9 @@ func Check(repo repository.Repository, owned registry.Registry) (bool, error) {
 
 // Sync rewrites frigo's managed section in the common info/exclude file.
 func Sync(repo repository.Repository, owned registry.Registry) error {
+	if err := validateExcludePath(repo); err != nil {
+		return fmt.Errorf("validate Git exclude path: %w", err)
+	}
 	if err := testsync.Fail("exclude-sync"); err != nil {
 		return err
 	}
@@ -117,6 +123,44 @@ func Sync(repo repository.Repository, owned registry.Registry) error {
 	}
 	if err := atomicfile.Write(repo.ExcludePath, output, mode); err != nil {
 		return fmt.Errorf("write Git exclude file: %w", err)
+	}
+	return nil
+}
+
+func validateExcludePath(repo repository.Repository) error {
+	commonDir := filepath.Clean(repo.CommonDir)
+	excludePath := filepath.Clean(repo.ExcludePath)
+	relative, err := filepath.Rel(commonDir, excludePath)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("Git exclude file %s is outside common Git directory %s", excludePath, commonDir)
+	}
+
+	components := append([]string{commonDir}, strings.Split(relative, string(filepath.Separator))...)
+	current := components[0]
+	for index, component := range components {
+		if index > 0 {
+			current = filepath.Join(current, component)
+		}
+		info, statErr := os.Lstat(current)
+		final := index == len(components)-1
+		if os.IsNotExist(statErr) && final {
+			return nil
+		}
+		if statErr != nil {
+			return fmt.Errorf("inspect Git exclude path component %s: %w", current, statErr)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("Git exclude path component %s is a symlink", current)
+		}
+		if final {
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("Git exclude file %s is not a regular file", current)
+			}
+			continue
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("Git exclude parent %s is not a directory", current)
+		}
 	}
 	return nil
 }

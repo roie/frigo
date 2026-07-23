@@ -3,6 +3,7 @@ package frigo
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -122,6 +123,60 @@ func TestDoctorDiagnosesMissingPointer(t *testing.T) {
 	assertDoctorIssue(t, result, "association-pointer-missing", ws.repo.WorktreeIDPath, true)
 }
 
+func TestDoctorRepairRejectsPointerAssociationWithConflictingAdminEvidence(t *testing.T) {
+	for _, stale := range []bool{false, true} {
+		name := "live"
+		if stale {
+			name = "stale"
+		}
+		t.Run(name, func(t *testing.T) {
+			ws := newDoctorWorkspace(t, true)
+			id, err := metadata.LoadPointer(ws.repo.WorktreeIDPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			siblingRoot := filepath.Join(filepath.Dir(ws.repo.Root), filepath.Base(ws.repo.Root)+"-conflict")
+			testrepo.Run(t, ws.repo.Root, "worktree", "add", "-q", "-b", "doctor-conflict", siblingRoot)
+			t.Cleanup(func() { _ = os.RemoveAll(siblingRoot) })
+			siblingRepo, err := repository.Discover(context.Background(), gitpkg.Client{Path: "git"}, siblingRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := metadata.SavePointer(siblingRepo.WorktreeIDPath, id); err != nil {
+				t.Fatal(err)
+			}
+			if stale {
+				if err := os.RemoveAll(siblingRoot); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Remove(ws.repo.WorktreeIDPath); err != nil {
+				t.Fatal(err)
+			}
+
+			result, err := ws.Doctor(context.Background(), DoctorOptions{Repair: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertDoctorIssue(t, result, "association-ambiguous", ws.repo.WorktreeIDPath, false)
+			assertDoctorIssue(t, result, "orphan-store", filepath.Join(ws.repo.LinkedStoresDir, id), false)
+			for _, actions := range [][]DoctorAction{result.Planned, result.Applied} {
+				for _, action := range actions {
+					if strings.HasPrefix(action.Code, "association-pointer-") {
+						t.Fatalf("unsafe pointer repair outcome = %#v", action)
+					}
+				}
+			}
+			if got, err := metadata.LoadPointer(siblingRepo.WorktreeIDPath); err != nil || got != id {
+				t.Fatalf("conflicting evidence = %q, %v; want retained %s", got, err, id)
+			}
+			if _, err := os.Lstat(ws.repo.WorktreeIDPath); !os.IsNotExist(err) {
+				t.Fatalf("current pointer was repaired despite conflict: %v", err)
+			}
+		})
+	}
+}
+
 func TestDoctorDiagnosesAssociationIDMismatch(t *testing.T) {
 	ws := newDoctorWorkspace(t, true)
 	id, err := metadata.LoadPointer(ws.repo.WorktreeIDPath)
@@ -208,6 +263,35 @@ func TestDoctorDiagnosesStaleExclusions(t *testing.T) {
 	assertDoctorIssue(t, result, "exclusions-stale", ws.repo.ExcludePath, true)
 }
 
+func TestDoctorRepairRejectsSymlinkedExcludeParentWithoutMutatingTarget(t *testing.T) {
+	ws := newDoctorWorkspace(t, false)
+	externalInfo := filepath.Join(ws.repo.Root, "external-info")
+	if err := os.Rename(filepath.Dir(ws.repo.ExcludePath), externalInfo); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(externalInfo, filepath.Dir(ws.repo.ExcludePath)); err != nil {
+		t.Fatal(err)
+	}
+	externalExclude := filepath.Join(externalInfo, "exclude")
+	foreign := []byte("foreign-before\n")
+	if err := os.WriteFile(externalExclude, foreign, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ws.Doctor(context.Background(), DoctorOptions{Repair: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDoctorIssue(t, result, "exclusions-malformed", ws.repo.ExcludePath, false)
+	if len(result.Planned) != 0 || len(result.Applied) != 0 {
+		t.Fatalf("unsafe exclusion repair outcomes = %#v / %#v", result.Planned, result.Applied)
+	}
+	contents, err := os.ReadFile(externalExclude)
+	if err != nil || !bytes.Equal(contents, foreign) {
+		t.Fatalf("external exclude = %q, %v; want unchanged %q", contents, err, foreign)
+	}
+}
+
 func TestDoctorDiagnosesMalformedAndNonUTF8Metadata(t *testing.T) {
 	t.Run("malformed-manifest", func(t *testing.T) {
 		ws := newDoctorWorkspace(t, true)
@@ -253,6 +337,17 @@ func TestDoctorWarnsAboutUnicodeReplacementCharacter(t *testing.T) {
 
 	result := diagnoseDoctor(t, ws)
 	assertDoctorIssue(t, result, "metadata-replacement-character", manifestPath, false)
+}
+
+func TestDoctorDiagnosesReplacementCharacterInMalformedPointer(t *testing.T) {
+	ws := newDoctorWorkspace(t, true)
+	if err := os.WriteFile(ws.repo.WorktreeIDPath, []byte("\ufffd\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := diagnoseDoctor(t, ws)
+	assertDoctorIssue(t, result, "metadata-replacement-character", ws.repo.WorktreeIDPath, false)
+	assertDoctorIssue(t, result, "metadata-malformed", ws.repo.WorktreeIDPath, false)
 }
 
 func TestDoctorDiagnosesInvalidHistory(t *testing.T) {
@@ -453,6 +548,64 @@ func TestDoctorRepairPlansBeforeMutationAppliesBoundedRepairsAndReruns(t *testin
 	}
 	if !repairedManifest.LockOwned {
 		t.Fatal("exact lifecycle lock ownership was not repaired")
+	}
+}
+
+func TestDoctorApplyFailureRetainsCompletedActionsAndFreshDiagnosis(t *testing.T) {
+	ws := newDoctorWorkspace(t, false)
+	if err := os.Remove(ws.repo.PrivateAttributesPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ws.repo.ExcludePath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ws.doctorActionHook = func(code string) error {
+		if code == "exclusions-stale" {
+			return errors.New("induced exclusion apply failure")
+		}
+		return nil
+	}
+
+	result, err := ws.Doctor(context.Background(), DoctorOptions{Repair: true})
+	if err == nil || !strings.Contains(err.Error(), "apply doctor action exclusions-stale") {
+		t.Fatalf("DoctorWithPlan() error = %v, want exclusion apply failure", err)
+	}
+	if got, want := result.Applied, []DoctorAction{{
+		Code: "attributes-private", Path: ws.repo.PrivateAttributesPath, Description: "restore exact private attributes",
+	}}; !slices.Equal(got, want) {
+		t.Fatalf("applied = %#v, want %#v", got, want)
+	}
+	assertDoctorIssue(t, result, "exclusions-stale", ws.repo.ExcludePath, true)
+	for _, issue := range result.Issues {
+		if issue.Code == "attributes-private" {
+			t.Fatalf("stale pre-apply diagnosis retained repaired issue: %#v", result.Issues)
+		}
+	}
+	if got, err := os.ReadFile(ws.repo.PrivateAttributesPath); err != nil || string(got) != privateAttributes {
+		t.Fatalf("completed attributes repair = %q, %v", got, err)
+	}
+}
+
+func TestDoctorDoesNotReportCallbackSatisfiedActionAsApplied(t *testing.T) {
+	ws := newDoctorWorkspace(t, false)
+	if err := os.Remove(ws.repo.PrivateAttributesPath); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ws.DoctorWithPlan(context.Background(), DoctorOptions{Repair: true}, func([]DoctorAction) error {
+		return os.WriteFile(ws.repo.PrivateAttributesPath, []byte(privateAttributes), 0o600)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Planned) != 1 || result.Planned[0].Code != "attributes-private" {
+		t.Fatalf("planned = %#v, want attributes repair", result.Planned)
+	}
+	if len(result.Applied) != 0 {
+		t.Fatalf("applied = %#v, want callback-satisfied no-op omitted", result.Applied)
+	}
+	if len(result.Issues) != 0 {
+		t.Fatalf("post-repair issues = %#v, want none", result.Issues)
 	}
 }
 
