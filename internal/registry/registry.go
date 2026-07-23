@@ -99,6 +99,9 @@ func (r *Registry) Add(paths ...string) (AddResult, error) {
 	if next.Version == 0 {
 		next.Version = CurrentVersion
 	}
+	if err := next.validate(); err != nil {
+		return AddResult{}, err
+	}
 	next.Paths = normalize(next.Paths)
 	result := AddResult{AlreadyOwned: make(map[string]string)}
 
@@ -132,6 +135,9 @@ func (r *Registry) Release(paths ...string) (ReleaseResult, error) {
 	}
 
 	next := Registry{Version: r.Version, Paths: append([]string(nil), r.Paths...)}
+	if err := next.validate(); err != nil {
+		return ReleaseResult{}, err
+	}
 	next.Paths = normalize(next.Paths)
 	removeSet := make(map[string]struct{}, len(paths))
 	for _, candidate := range paths {

@@ -34,19 +34,19 @@ func TestLoadRejectsInvalidRawUTF8(t *testing.T) {
 	}
 }
 
-func TestLoadPreservesReplacementCharacterPath(t *testing.T) {
-	filename := filepath.Join(t.TempDir(), "registry.json")
-	data := []byte(`{"version":1,"paths":["bad-�.md"]}`)
-	if err := os.WriteFile(filename, data, 0o600); err != nil {
-		t.Fatal(err)
+func TestSaveAndLoadPreservesReplacementCharacterPath(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), "state", "registry.json")
+	original := Registry{Version: CurrentVersion, Paths: []string{"bad-�.md"}}
+	if err := Save(filename, original); err != nil {
+		t.Fatalf("Save() error = %v", err)
 	}
 
 	loaded, err := Load(filename)
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if !slices.Equal(loaded.Paths, []string{"bad-�.md"}) {
-		t.Fatalf("loaded Paths = %#v", loaded.Paths)
+	if !slices.Equal(loaded.Paths, original.Paths) {
+		t.Fatalf("loaded Paths = %#v, want %#v", loaded.Paths, original.Paths)
 	}
 }
 
@@ -133,6 +133,38 @@ func TestReleaseRejectsInvalidMutationInputsAndLeavesStateUnchanged(t *testing.T
 				t.Fatalf("Release(%q) result = %#v, want zero value", candidate, result)
 			}
 		})
+	}
+}
+
+func TestAddRejectsMalformedReceiverStateAndLeavesStateUnchanged(t *testing.T) {
+	bad := string([]byte{'b', 'a', 'd', '-', 0xff})
+	base := Registry{Version: CurrentVersion, Paths: []string{"docs", bad}}
+	owned := base
+	result, err := owned.Add("PLAN.md")
+	if err == nil || !strings.Contains(err.Error(), "invalid registry") {
+		t.Fatalf("Add() error = %v, want invalid registry", err)
+	}
+	if !slices.Equal(owned.Paths, base.Paths) || owned.Version != base.Version {
+		t.Fatalf("registry mutated on error: %#v", owned)
+	}
+	if len(result.Added) != 0 || len(result.ReleasedCovered) != 0 || len(result.AlreadyOwned) != 0 {
+		t.Fatalf("Add() result = %#v, want zero value", result)
+	}
+}
+
+func TestReleaseRejectsMalformedReceiverStateAndLeavesStateUnchanged(t *testing.T) {
+	bad := string([]byte{'b', 'a', 'd', '-', 0xff})
+	base := Registry{Version: CurrentVersion, Paths: []string{"docs", bad}}
+	owned := base
+	result, err := owned.Release("PLAN.md")
+	if err == nil || !strings.Contains(err.Error(), "invalid registry") {
+		t.Fatalf("Release() error = %v, want invalid registry", err)
+	}
+	if !slices.Equal(owned.Paths, base.Paths) || owned.Version != base.Version {
+		t.Fatalf("registry mutated on error: %#v", owned)
+	}
+	if len(result.Released) != 0 || len(result.Missing) != 0 {
+		t.Fatalf("Release() result = %#v, want zero value", result)
 	}
 }
 
