@@ -9,6 +9,7 @@ import (
 
 	"github.com/roie/frigo/internal/frigo"
 	gitpkg "github.com/roie/frigo/internal/git"
+	"github.com/roie/frigo/internal/registry"
 	"github.com/roie/frigo/internal/repository"
 )
 
@@ -91,7 +92,13 @@ func runAt(ctx context.Context, args []string, stdin io.Reader, stdout, stderr i
 			}
 		}
 	case "release":
-		result, err := workspace.Release(ctx, parsed.paths, parsed.force)
+		var result registry.ReleaseResult
+		var err error
+		if parsed.all {
+			result, err = workspace.ReleaseAll(ctx, parsed.force)
+		} else {
+			result, err = workspace.Release(ctx, parsed.paths, parsed.force)
+		}
 		if err != nil {
 			return printError(stderr, err)
 		}

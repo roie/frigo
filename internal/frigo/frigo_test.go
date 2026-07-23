@@ -781,6 +781,122 @@ func TestReleaseFinalRootRetainsHistory(t *testing.T) {
 	assertNoTemporaryIndexes(t, ws)
 }
 
+func TestReleaseAllPreflightsEveryOwnedRootBeforeMutating(t *testing.T) {
+	ws, root := newWorkspace(t)
+	ownForTest(t, ws, "PLAN.md", "NOTES.md")
+	syncIgnoreForTest(t, ws)
+	testrepo.Write(t, root, "PLAN.md", "saved plan\n")
+	testrepo.Write(t, root, "NOTES.md", "saved notes\n")
+	saveForTest(t, ws, "save owned files")
+	testrepo.Write(t, root, "NOTES.md", "dirty notes\n")
+
+	_, err := ws.ReleaseAll(context.Background(), false)
+	if err == nil || !strings.Contains(err.Error(), "uncommitted frigo changes") {
+		t.Fatalf("ReleaseAll() error = %v", err)
+	}
+	owned, loadErr := registry.Load(ws.repo.RegistryPath)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if !slices.Equal(owned.Paths, []string{"NOTES.md", "PLAN.md"}) {
+		t.Fatalf("registry paths = %v, want both roots retained", owned.Paths)
+	}
+	if got := testrepo.Read(t, root, "PLAN.md"); got != "saved plan\n" {
+		t.Fatalf("PLAN.md = %q, want saved content preserved", got)
+	}
+	if got := testrepo.Read(t, root, "NOTES.md"); got != "dirty notes\n" {
+		t.Fatalf("NOTES.md = %q, want dirty content preserved", got)
+	}
+	contents := testrepo.Read(t, root, ".git/info/exclude")
+	if !strings.Contains(contents, "/PLAN.md") || !strings.Contains(contents, "/NOTES.md") {
+		t.Fatalf("exclude file lost owned paths after failed release all: %q", contents)
+	}
+
+	assertNoPersistentIndex(t, ws)
+	assertNoTemporaryIndexes(t, ws)
+}
+
+func TestReleaseAllReleasesCurrentWorktreeOnlyAndKeepsPointerManifestHistory(t *testing.T) {
+	ws, mainRoot, linkedRoot := newLinkedWorkspace(t)
+	mainRepo, err := repository.Discover(context.Background(), gitpkg.Client{Path: "git"}, mainRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mainWS := NewWorkspace(mainRepo, gitpkg.Client{Path: "git"}, mainRoot)
+
+	testrepo.Write(t, mainRoot, "main.local", "main\n")
+	testrepo.Write(t, linkedRoot, "alpha.local", "alpha\n")
+	testrepo.Write(t, linkedRoot, "beta.local", "beta\n")
+
+	if _, err := mainWS.Add(context.Background(), []string{"main.local"}); err != nil {
+		t.Fatal(err)
+	}
+	saveForTest(t, mainWS, "save main")
+	if _, err := ws.Add(context.Background(), []string{"alpha.local", "beta.local"}); err != nil {
+		t.Fatal(err)
+	}
+	saveForTest(t, ws, "save linked")
+	id := linkedWorkspaceID(t, ws)
+
+	result, err := ws.ReleaseAll(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(result.Released, []string{"alpha.local", "beta.local"}) {
+		t.Fatalf("ReleaseAll() released = %v, want both linked roots", result.Released)
+	}
+	linkedOwned, err := registry.Load(ws.repo.RegistryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(linkedOwned.Paths) != 0 {
+		t.Fatalf("linked registry paths = %v, want empty", linkedOwned.Paths)
+	}
+	mainOwned, err := registry.Load(mainWS.repo.RegistryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(mainOwned.Paths, []string{"main.local"}) {
+		t.Fatalf("main registry paths = %v, want main worktree untouched", mainOwned.Paths)
+	}
+	if got := linkedManifest(t, ws); got.ID != id || got.WorktreePath != linkedRoot || got.LockOwned {
+		t.Fatalf("linked manifest after release all = %+v, want preserved pointer and cleared lock", got)
+	}
+	lock, err := ws.inspectWorktreeLock(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lock.exists {
+		t.Fatalf("linked worktree lock remains after release all: %#v", lock)
+	}
+	if _, err := os.Stat(ws.repo.WorktreeIDPath); err != nil {
+		t.Fatalf("linked pointer removed after release all: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ws.repo.FrigoDir, manifestName)); err != nil {
+		t.Fatalf("linked manifest removed after release all: %v", err)
+	}
+	if _, err := os.Stat(ws.repo.HistoryDir); err != nil {
+		t.Fatalf("linked history removed after release all: %v", err)
+	}
+	contents, err := os.ReadFile(ws.repo.ExcludePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(contents), "/alpha.local") || strings.Contains(string(contents), "/beta.local") || !strings.Contains(string(contents), "/main.local") {
+		t.Fatalf("exclude file after release all = %q, want only main worktree paths", contents)
+	}
+	log, err := ws.Log(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(log, "save linked") {
+		t.Fatalf("Log() = %q, want linked history preserved", log)
+	}
+
+	assertNoPersistentIndex(t, ws)
+	assertNoTemporaryIndexes(t, ws)
+}
+
 func TestReleaseRollsBackRegistryOnExcludeFailure(t *testing.T) {
 	ws, root := committedWorkspace(t, "PLAN.md", "saved\n")
 	originalExclude := "# >>> frigo >>>\n# >>> frigo >>>\n"

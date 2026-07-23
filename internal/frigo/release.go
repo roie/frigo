@@ -22,6 +22,22 @@ func (w *Workspace) Release(ctx context.Context, rawPaths []string, force bool) 
 	return result, err
 }
 
+func (w *Workspace) ReleaseAll(ctx context.Context, force bool) (registry.ReleaseResult, error) {
+	var result registry.ReleaseResult
+	err := w.withLock(ctx, "release", func() error {
+		owned, err := w.loadRegistry(ctx)
+		if err != nil {
+			return err
+		}
+		if len(owned.Paths) == 0 {
+			return nil
+		}
+		result, err = w.releaseLocked(ctx, append([]string(nil), owned.Paths...), force)
+		return err
+	})
+	return result, err
+}
+
 func (w *Workspace) releaseLocked(ctx context.Context, rawPaths []string, force bool) (registry.ReleaseResult, error) {
 	paths, err := w.normalizePaths(rawPaths, false)
 	if err != nil {

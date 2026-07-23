@@ -17,7 +17,7 @@ func printHelp(output io.Writer) {
 
 Usage:
   frigo add [--] <path>...
-  frigo release [--force] [--] <path>...
+  frigo release [--all] [--force] [--] <path>...
   frigo status
   frigo list | frigo ls
   frigo diff [--] [<path>...]
@@ -29,7 +29,7 @@ Usage:
 
 Commands:
   add      Assign existing untracked paths to frigo.
-  release  Release exact ownership without deleting files or history.
+  release  Release exact ownership without deleting files or history, or every owned root with --all.
   status   Show main-repository and frigo working-tree status.
   list     List exact ownership roots; ls is an alias.
   diff     Show owned changes against frigo HEAD.
@@ -45,7 +45,7 @@ func printCommandUsage(output io.Writer, command string) {
 	case "add":
 		fmt.Fprintln(output, "Usage: frigo add [--] <path>...")
 	case "release":
-		fmt.Fprintln(output, "Usage: frigo release [--force] [--] <path>...")
+		fmt.Fprintln(output, "Usage: frigo release [--all] [--force] [--] <path>...")
 	case "status":
 		fmt.Fprintln(output, "Usage: frigo status")
 	case "list":

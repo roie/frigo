@@ -67,17 +67,40 @@ func parseNoArgCommand(command string, args []string) (parsedCommand, *usageErro
 }
 
 func parseReleaseArgs(args []string) (parsedCommand, *usageError) {
-	set := newFlagSet("release")
+	var all bool
 	var force bool
-	set.BoolVar(&force, "force", false, "")
-	if err := set.Parse(args); err != nil {
-		return parsedCommand{}, usageFor("release", err.Error())
+	paths := make([]string, 0, len(args))
+	options := true
+	for _, arg := range args {
+		if options {
+			switch arg {
+			case "--":
+				options = false
+				continue
+			case "--all":
+				all = true
+				continue
+			case "--force":
+				force = true
+				continue
+			default:
+				if len(arg) > 0 && arg[0] == '-' {
+					return parsedCommand{}, usageFor("release", fmt.Sprintf("flag provided but not defined: %s", arg))
+				}
+			}
+		}
+		paths = append(paths, arg)
 	}
-	paths := set.Args()
-	if len(paths) == 0 {
-		return parsedCommand{}, usageFor("release", "release requires at least one path")
+	switch {
+	case all && len(paths) > 0:
+		return parsedCommand{}, usageFor("release", "release --all does not accept paths")
+	case all:
+		return parsedCommand{name: "release", all: true, force: force}, nil
+	case len(paths) == 0:
+		return parsedCommand{}, usageFor("release", "release requires --all or at least one path")
+	default:
+		return parsedCommand{name: "release", paths: paths, force: force}, nil
 	}
-	return parsedCommand{name: "release", paths: paths, force: force}, nil
 }
 
 func parseCommitArgs(args []string) (parsedCommand, *usageError) {

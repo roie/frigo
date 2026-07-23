@@ -18,7 +18,7 @@ const wantHelp = `frigo keeps local project files without adding them to your ma
 
 Usage:
   frigo add [--] <path>...
-  frigo release [--force] [--] <path>...
+  frigo release [--all] [--force] [--] <path>...
   frigo status
   frigo list | frigo ls
   frigo diff [--] [<path>...]
@@ -30,7 +30,7 @@ Usage:
 
 Commands:
   add      Assign existing untracked paths to frigo.
-  release  Release exact ownership without deleting files or history.
+  release  Release exact ownership without deleting files or history, or every owned root with --all.
   status   Show main-repository and frigo working-tree status.
   list     List exact ownership roots; ls is an alias.
   diff     Show owned changes against frigo HEAD.
@@ -262,6 +262,67 @@ func TestCombinedAndSeparateAllFlags(t *testing.T) {
 	}
 	if trees[0] != trees[1] {
 		t.Fatalf("trees differ: %q != %q", trees[0], trees[1])
+	}
+}
+
+func TestReleaseAllParser(t *testing.T) {
+	t.Run("all", func(t *testing.T) {
+		got, usageErr := parseArgs([]string{"release", "--all"})
+		if usageErr != nil {
+			t.Fatalf("parseArgs() usage error = %v", usageErr)
+		}
+		if got.name != "release" || got.message != "" || !got.all || got.force || len(got.paths) != 0 {
+			t.Fatalf("parseArgs() = %+v, want release --all", got)
+		}
+	})
+
+	t.Run("all with force", func(t *testing.T) {
+		got, usageErr := parseArgs([]string{"release", "--all", "--force"})
+		if usageErr != nil {
+			t.Fatalf("parseArgs() usage error = %v", usageErr)
+		}
+		if got.name != "release" || got.message != "" || !got.all || !got.force || len(got.paths) != 0 {
+			t.Fatalf("parseArgs() = %+v, want release --all --force", got)
+		}
+	})
+
+	t.Run("all rejects paths", func(t *testing.T) {
+		_, usageErr := parseArgs([]string{"release", "--all", "PLAN.md"})
+		if usageErr == nil || !strings.Contains(usageErr.message, "release --all does not accept paths") {
+			t.Fatalf("parseArgs() usage error = %v", usageErr)
+		}
+	})
+}
+
+func TestReleaseAllCommandReleasesEveryOwnedRoot(t *testing.T) {
+	root := testrepo.Init(t)
+	testrepo.Write(t, root, "README.md", "main\n")
+	testrepo.CommitAll(t, root, "initial", "README.md")
+	for _, path := range []string{"PLAN.md", "NOTES.md"} {
+		testrepo.Write(t, root, path, path+"\n")
+	}
+	if got := invoke(t, root, "add", "PLAN.md", "NOTES.md"); got.code != 0 {
+		t.Fatalf("add: %+v", got)
+	}
+	if got := invoke(t, root, "commit", "-a", "-m", "checkpoint"); got.code != 0 {
+		t.Fatalf("commit: %+v", got)
+	}
+
+	got := invoke(t, root, "release", "--all")
+	if got.code != 0 || got.stderr != "" {
+		t.Fatalf("release --all: %+v", got)
+	}
+	if !strings.Contains(got.stdout, "released NOTES.md") || !strings.Contains(got.stdout, "released PLAN.md") {
+		t.Fatalf("release --all stdout:\n%s", got.stdout)
+	}
+
+	got = invoke(t, root, "list")
+	if got.code != 0 || got.stderr != "" || got.stdout != "" {
+		t.Fatalf("list after release --all: %+v", got)
+	}
+	contents := testrepo.Read(t, root, ".git/info/exclude")
+	if strings.Contains(contents, "/PLAN.md") || strings.Contains(contents, "/NOTES.md") {
+		t.Fatalf("exclude file still contains released paths: %q", contents)
 	}
 }
 
