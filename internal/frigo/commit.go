@@ -22,6 +22,16 @@ type CommitResult struct {
 }
 
 func (w *Workspace) Commit(ctx context.Context, options CommitOptions) (CommitResult, error) {
+	var result CommitResult
+	err := w.withLock(ctx, "commit", func() error {
+		var err error
+		result, err = w.commitLocked(ctx, options)
+		return err
+	})
+	return result, err
+}
+
+func (w *Workspace) commitLocked(ctx context.Context, options CommitOptions) (CommitResult, error) {
 	if strings.TrimSpace(options.Message) == "" {
 		return CommitResult{}, errors.New("commit message cannot be empty")
 	}

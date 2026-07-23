@@ -8,6 +8,16 @@ import (
 )
 
 func (w *Workspace) Restore(ctx context.Context, rawPaths []string) ([]string, error) {
+	var result []string
+	err := w.withLock(ctx, "restore", func() error {
+		var err error
+		result, err = w.restoreLocked(ctx, rawPaths)
+		return err
+	})
+	return result, err
+}
+
+func (w *Workspace) restoreLocked(ctx context.Context, rawPaths []string) ([]string, error) {
 	owned, err := w.loadSeparatedRegistry(ctx)
 	if err != nil {
 		return nil, err

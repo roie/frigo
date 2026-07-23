@@ -14,6 +14,16 @@ import (
 var saveRegistry = registry.Save
 
 func (w *Workspace) Add(ctx context.Context, rawPaths []string) (registry.AddResult, error) {
+	var result registry.AddResult
+	err := w.withLock(ctx, "add", func() error {
+		var err error
+		result, err = w.addLocked(ctx, rawPaths)
+		return err
+	})
+	return result, err
+}
+
+func (w *Workspace) addLocked(ctx context.Context, rawPaths []string) (registry.AddResult, error) {
 	paths, err := w.normalizePaths(rawPaths, true)
 	if err != nil {
 		return registry.AddResult{}, err

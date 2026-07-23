@@ -2,20 +2,40 @@ package frigo
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"time"
 
 	"github.com/roie/frigo/internal/atomicfile"
 	"github.com/roie/frigo/internal/git"
+	"github.com/roie/frigo/internal/lockfile"
 	"github.com/roie/frigo/internal/repository"
 )
 
 type Workspace struct {
-	repo    repository.Repository
-	git     git.Client
-	baseDir string
+	repo     repository.Repository
+	git      git.Client
+	baseDir  string
+	lockWait time.Duration
 }
 
 func NewWorkspace(repo repository.Repository, client git.Client, baseDir string) *Workspace {
-	return &Workspace{repo: repo, git: client, baseDir: baseDir}
+	return &Workspace{repo: repo, git: client, baseDir: baseDir, lockWait: operationLockWait}
+}
+
+const operationLockWait = 10 * time.Second
+
+func (w *Workspace) withLock(ctx context.Context, operation string, fn func() error) (err error) {
+	lock, err := lockfile.Acquire(ctx, w.repo.OperationLockPath, operation, w.lockWait)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if releaseErr := lock.Release(); releaseErr != nil {
+			err = errors.Join(err, fmt.Errorf("release operation lock: %w", releaseErr))
+		}
+	}()
+	return fn()
 }
 
 func (w *Workspace) privateOutput(ctx context.Context, client git.Client, args ...string) (string, error) {

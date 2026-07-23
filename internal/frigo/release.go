@@ -11,6 +11,16 @@ import (
 )
 
 func (w *Workspace) Release(ctx context.Context, rawPaths []string, force bool) (registry.ReleaseResult, error) {
+	var result registry.ReleaseResult
+	err := w.withLock(ctx, "release", func() error {
+		var err error
+		result, err = w.releaseLocked(ctx, rawPaths, force)
+		return err
+	})
+	return result, err
+}
+
+func (w *Workspace) releaseLocked(ctx context.Context, rawPaths []string, force bool) (registry.ReleaseResult, error) {
 	paths, err := w.normalizePaths(rawPaths, false)
 	if err != nil {
 		return registry.ReleaseResult{}, err

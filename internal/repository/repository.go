@@ -18,6 +18,7 @@ type Repository struct {
 	HistoryDir            string
 	RegistryPath          string
 	ExcludePath           string
+	OperationLockPath     string
 	AttributesPath        string
 	PrivateAttributesPath string
 	HooksDir              string
@@ -65,6 +66,7 @@ func Discover(ctx context.Context, client git.Client, start string) (Repository,
 		HistoryDir:            filepath.Join(frigoDir, "history.git"),
 		RegistryPath:          filepath.Join(frigoDir, "registry.json"),
 		ExcludePath:           filepath.Join(commonDir, "info", "exclude"),
+		OperationLockPath:     filepath.Join(commonDir, "frigo.lock"),
 		AttributesPath:        filepath.Join(frigoDir, "attributes"),
 		PrivateAttributesPath: filepath.Join(frigoDir, "history.git", "info", "attributes"),
 		HooksDir:              filepath.Join(frigoDir, "hooks"),

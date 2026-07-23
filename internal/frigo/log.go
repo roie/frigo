@@ -6,6 +6,16 @@ import (
 )
 
 func (w *Workspace) Log(ctx context.Context) (string, error) {
+	var result string
+	err := w.withLock(ctx, "log", func() error {
+		var err error
+		result, err = w.logLocked(ctx)
+		return err
+	})
+	return result, err
+}
+
+func (w *Workspace) logLocked(ctx context.Context) (string, error) {
 	if _, err := w.loadRegistry(ctx); err != nil {
 		return "", err
 	}

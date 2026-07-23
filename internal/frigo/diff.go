@@ -8,6 +8,16 @@ import (
 )
 
 func (w *Workspace) Diff(ctx context.Context, rawPaths []string) (string, error) {
+	var result string
+	err := w.withLock(ctx, "diff", func() error {
+		var err error
+		result, err = w.diffLocked(ctx, rawPaths)
+		return err
+	})
+	return result, err
+}
+
+func (w *Workspace) diffLocked(ctx context.Context, rawPaths []string) (string, error) {
 	owned, err := w.loadSeparatedRegistry(ctx)
 	if err != nil {
 		return "", err

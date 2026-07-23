@@ -67,6 +67,9 @@ func TestDiscoverNormalRepository(t *testing.T) {
 	if repo.ExcludePath != filepath.Join(wantGitDir, "info", "exclude") {
 		t.Fatalf("ExcludePath = %q", repo.ExcludePath)
 	}
+	if repo.OperationLockPath != filepath.Join(wantGitDir, "frigo.lock") {
+		t.Fatalf("OperationLockPath = %q", repo.OperationLockPath)
+	}
 	if repo.AttributesPath != filepath.Join(repo.FrigoDir, "attributes") {
 		t.Fatalf("AttributesPath = %q, want under FrigoDir", repo.AttributesPath)
 	}
@@ -120,6 +123,9 @@ func TestDiscoverLinkedWorktreeUsesWorktreeLocalState(t *testing.T) {
 	}
 	if repo.ExcludePath != filepath.Join(root, ".git", "info", "exclude") {
 		t.Fatalf("ExcludePath = %q", repo.ExcludePath)
+	}
+	if repo.OperationLockPath != filepath.Join(root, ".git", "frigo.lock") {
+		t.Fatalf("OperationLockPath = %q, want shared common lock", repo.OperationLockPath)
 	}
 }
 

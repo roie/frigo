@@ -8,6 +8,16 @@ import (
 )
 
 func (w *Workspace) List(ctx context.Context, rawPaths []string) ([]string, error) {
+	var result []string
+	err := w.withLock(ctx, "list", func() error {
+		var err error
+		result, err = w.listLocked(ctx, rawPaths)
+		return err
+	})
+	return result, err
+}
+
+func (w *Workspace) listLocked(ctx context.Context, rawPaths []string) ([]string, error) {
 	owned, err := w.loadRegistry(ctx)
 	if err != nil {
 		return nil, err
@@ -28,6 +38,16 @@ func (w *Workspace) List(ctx context.Context, rawPaths []string) ([]string, erro
 }
 
 func (w *Workspace) Status(ctx context.Context, rawPaths []string) (string, error) {
+	var result string
+	err := w.withLock(ctx, "status", func() error {
+		var err error
+		result, err = w.statusLocked(ctx, rawPaths)
+		return err
+	})
+	return result, err
+}
+
+func (w *Workspace) statusLocked(ctx context.Context, rawPaths []string) (string, error) {
 	owned, err := w.loadSeparatedRegistry(ctx)
 	if err != nil {
 		return "", err
