@@ -160,6 +160,32 @@ func TestConcurrentCLIRepositoryOperations(t *testing.T) {
 		assertRegistryPaths(t, linkedRegistryPath(t, linkedRepo), "linked.local")
 		assertExcludePatterns(t, mainRepo.ExcludePath, "main.local", "linked.local")
 	})
+
+	t.Run("status holds one lock across main and frigo halves", func(t *testing.T) {
+		root := testrepo.Init(t)
+		testrepo.Write(t, root, "private.local", "private\n")
+		repo := discoverRepository(t, root)
+		syncDir := t.TempDir()
+
+		add := startCLI(t, binary, root, processHooks{syncDir: syncDir, pause: []string{addLoaded}}, "add", "private.local")
+		waitForProcessEvent(t, add, addLoaded)
+		assertLockOwner(t, repo.OperationLockPath, add)
+
+		status := startCLI(t, binary, root, processHooks{syncDir: syncDir}, "status")
+		waitForProcessEvent(t, status, lockContended)
+		assertLockOwner(t, repo.OperationLockPath, add)
+
+		continueProcess(t, add, addLoaded)
+		assertProcessSuccess(t, add)
+		assertProcessSuccess(t, status)
+
+		if count := strings.Count(status.result.stdout, "private.local"); count != 1 {
+			t.Fatalf("status observed exclusion change between halves; path count = %d, want 1:\n%s", count, status.result.stdout)
+		}
+		if !strings.Contains(status.result.stdout, "main\n  clean\nfrigo\n") {
+			t.Fatalf("status did not read main exclusions after the serialized add:\n%s", status.result.stdout)
+		}
+	})
 }
 
 func TestDoctorCLIPrintsCompletedActionsBeforeApplyFailure(t *testing.T) {

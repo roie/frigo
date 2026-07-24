@@ -573,6 +573,22 @@ func TestStatusScopesToOwnedPaths(t *testing.T) {
 	assertNoTemporaryIndexes(t, ws)
 }
 
+func TestStatusUsesResolvedHistoryBaseAfterExternalRefUpdate(t *testing.T) {
+	ws, root := committedWorkspace(t, "PLAN.md", "base\n")
+	base, winner := createWinnerAndRestoreBase(t, ws, root, "PLAN.md", "winner\n")
+
+	changing := NewWorkspace(ws.repo, externalHeadChangeGitClient(t, ws.repo.HistoryDir, winner, base, "status,diff-index"), root)
+	status, err := changing.Status(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != " M PLAN.md" {
+		t.Fatalf("Status() = %q, want worktree change against captured base", status)
+	}
+	assertHistoryHead(t, ws, winner)
+	assertNoTemporaryIndexes(t, changing)
+}
+
 func TestDiffRejectsUnownedPath(t *testing.T) {
 	ws, _ := newWorkspace(t)
 	ownForTest(t, ws, "docs/local")
@@ -614,6 +630,21 @@ func TestLogReportsSavedHistory(t *testing.T) {
 	}
 }
 
+func TestLogUsesResolvedHistoryBaseAfterExternalRefUpdate(t *testing.T) {
+	ws, root := committedWorkspace(t, "PLAN.md", "base\n")
+	base, winner := createWinnerAndRestoreBase(t, ws, root, "PLAN.md", "winner\n")
+
+	changing := NewWorkspace(ws.repo, externalHeadChangeGitClient(t, ws.repo.HistoryDir, winner, base, "log"), root)
+	log, err := changing.Log(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(log, "save PLAN.md") || strings.Contains(log, "winner snapshot") {
+		t.Fatalf("Log() = %q, want history ending at captured base", log)
+	}
+	assertHistoryHead(t, ws, winner)
+}
+
 func TestLogReportsNoSavedHistoryWithoutHead(t *testing.T) {
 	ws, _ := newWorkspace(t)
 
@@ -644,6 +675,23 @@ func TestReleaseDirtyPathRequiresForce(t *testing.T) {
 
 	assertNoPersistentIndex(t, ws)
 	assertNoTemporaryIndexes(t, ws)
+}
+
+func TestReleaseDirtyCheckUsesResolvedHistoryBaseAfterExternalRefUpdate(t *testing.T) {
+	ws, root := committedWorkspace(t, "PLAN.md", "base\n")
+	base, winner := createWinnerAndRestoreBase(t, ws, root, "PLAN.md", "winner\n")
+	testrepo.Write(t, root, "PLAN.md", "base\n")
+
+	changing := NewWorkspace(ws.repo, externalHeadChangeGitClient(t, ws.repo.HistoryDir, winner, base, "status,diff-index"), root)
+	result, err := changing.Release(context.Background(), []string{"PLAN.md"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(result.Released, []string{"PLAN.md"}) {
+		t.Fatalf("Release() = %#v, want captured-base-clean release", result)
+	}
+	assertHistoryHead(t, ws, winner)
+	assertNoTemporaryIndexes(t, changing)
 }
 
 func TestReleaseAndRestoreExactPathWithSpacesAndMetacharacters(t *testing.T) {
@@ -1239,12 +1287,12 @@ func assertNoPersistentIndex(t *testing.T, ws *Workspace) {
 
 func assertNoTemporaryIndexes(t *testing.T, ws *Workspace) {
 	t.Helper()
-	matches, err := filepath.Glob(filepath.Join(ws.repo.FrigoDir, "temporary-index-*"))
+	matches, err := filepath.Glob(filepath.Join(ws.repo.FrigoDir, "temporary-*"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(matches) != 0 {
-		t.Fatalf("temporary indexes remain: %v", matches)
+		t.Fatalf("temporary private-history files remain: %v", matches)
 	}
 }
 
@@ -1266,6 +1314,40 @@ func failingGitClientWithStderr(t *testing.T, failGitDir, failCommand, failArg, 
 		"FRIGO_FAIL_ARG="+failArg,
 		"FRIGO_FAIL_STDERR="+stderr,
 	)
+}
+
+func createWinnerAndRestoreBase(t *testing.T, ws *Workspace, root, path, winnerContents string) (string, string) {
+	t.Helper()
+	base, err := ws.privateOutput(context.Background(), ws.git, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	testrepo.Write(t, root, path, winnerContents)
+	saveForTest(t, ws, "winner snapshot")
+	winner, err := ws.privateOutput(context.Background(), ws.git, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.privateOutput(context.Background(), ws.git, "update-ref", "HEAD", base, winner); err != nil {
+		t.Fatal(err)
+	}
+	return base, winner
+}
+
+func assertHistoryHead(t *testing.T, ws *Workspace, want string) {
+	t.Helper()
+	got, err := ws.privateOutput(context.Background(), ws.git, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("history HEAD = %s, want external update %s", got, want)
+	}
+}
+
+func externalHeadChangeGitClient(t *testing.T, historyDir, winner, expected, commands string) gitpkg.Client {
+	t.Helper()
+	return concurrentHeadChangeGitClient(t, historyDir, winner, expected).WithEnv("FRIGO_UPDATE_BEFORE_COMMAND=" + commands)
 }
 
 func concurrentHeadChangeGitClient(t *testing.T, historyDir, winner, expected string) gitpkg.Client {

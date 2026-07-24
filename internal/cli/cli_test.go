@@ -363,6 +363,28 @@ func TestReleaseAllParser(t *testing.T) {
 		}
 	})
 
+	t.Run("single-dash all and force aliases", func(t *testing.T) {
+		got, usageErr := parseArgs([]string{"release", "-all", "-force"})
+		if usageErr != nil {
+			t.Fatalf("parseArgs() usage error = %v", usageErr)
+		}
+		if got.name != "release" || !got.all || !got.force || len(got.paths) != 0 {
+			t.Fatalf("parseArgs() = %+v, want release -all -force", got)
+		}
+	})
+
+	for _, forceFlag := range []string{"-force", "--force"} {
+		t.Run("path with "+forceFlag, func(t *testing.T) {
+			got, usageErr := parseArgs([]string{"release", forceFlag, "PLAN.md"})
+			if usageErr != nil {
+				t.Fatalf("parseArgs() usage error = %v", usageErr)
+			}
+			if got.name != "release" || got.all || !got.force || !slices.Equal(got.paths, []string{"PLAN.md"}) {
+				t.Fatalf("parseArgs() = %+v, want forced path release", got)
+			}
+		})
+	}
+
 	t.Run("all rejects paths", func(t *testing.T) {
 		_, usageErr := parseArgs([]string{"release", "--all", "PLAN.md"})
 		if usageErr == nil || !strings.Contains(usageErr.message, "release --all does not accept paths") {

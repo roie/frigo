@@ -65,6 +65,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 )
 
 func main() {
@@ -118,7 +119,24 @@ func main() {
 }
 
 func shouldUpdateHistory() bool {
-	return os.Getenv("FRIGO_REAL_GIT") != "" && os.Getenv("FRIGO_HISTORY_DIR") != "" && commandMatchesUpdateRef() && (os.Getenv("FRIGO_WINNER") != "" || os.Getenv("FRIGO_EXPECTED") != "")
+	if os.Getenv("FRIGO_REAL_GIT") == "" || os.Getenv("FRIGO_HISTORY_DIR") == "" || (os.Getenv("FRIGO_WINNER") == "" && os.Getenv("FRIGO_EXPECTED") == "") {
+		return false
+	}
+	if commands := os.Getenv("FRIGO_UPDATE_BEFORE_COMMAND"); commands != "" {
+		return commandMatchesAny(commands)
+	}
+	return commandMatchesUpdateRef()
+}
+
+func commandMatchesAny(commands string) bool {
+	for _, command := range strings.Split(commands, ",") {
+		for _, arg := range os.Args[1:] {
+			if arg == command {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func commandMatchesUpdateRef() bool {

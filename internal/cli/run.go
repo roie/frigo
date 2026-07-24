@@ -106,18 +106,14 @@ func runAt(ctx context.Context, args []string, stdin io.Reader, stdout, stderr i
 			fmt.Fprintf(stdout, "released %s\n", path)
 		}
 	case "status":
-		mainStatus, err := client.Output(ctx, repo.Root, "status", "--short", "--untracked-files=all", "--")
-		if err != nil {
-			return printError(stderr, fmt.Errorf("read main status: %w", err))
-		}
-		privateStatus, err := workspace.Status(ctx, nil)
+		status, err := workspace.StatusSnapshot(ctx)
 		if err != nil {
 			return printError(stderr, err)
 		}
 		fmt.Fprintln(stdout, "main")
-		printIndentedStatus(stdout, mainStatus)
+		printIndentedStatus(stdout, status.Main)
 		fmt.Fprintln(stdout, "frigo")
-		printIndentedStatus(stdout, privateStatus)
+		printIndentedStatus(stdout, status.Frigo)
 	case "list", "ls":
 		paths, err := workspace.List(ctx, nil)
 		if err != nil {

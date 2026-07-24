@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/roie/frigo/internal/git"
 )
@@ -54,6 +55,53 @@ func (w *Workspace) withTemporaryIndexAt(ctx context.Context, base historyBase, 
 		}
 	}
 	return fn(client)
+}
+
+func (w *Workspace) comparisonOID(ctx context.Context, base historyBase) (string, error) {
+	if base.Exists {
+		return base.OID, nil
+	}
+	oid, err := w.git.WithEnv("GIT_ATTR_NOSYSTEM=1").OutputWithInput(
+		ctx,
+		w.repo.Root,
+		"",
+		"--git-dir="+w.repo.HistoryDir,
+		"--work-tree="+w.repo.Root,
+		"hash-object",
+		"-t",
+		"tree",
+		"--stdin",
+	)
+	if err != nil {
+		return "", fmt.Errorf("resolve empty frigo history base: %w", err)
+	}
+	return oid, nil
+}
+
+// statusAtOID preserves Git's porcelain formatting while replacing the private
+// repository's symbolic HEAD with a temporary detached HEAD at oid.
+func (w *Workspace) statusAtOID(ctx context.Context, client git.Client, oid string, args ...string) (output string, returnErr error) {
+	gitDir, err := os.MkdirTemp(w.repo.FrigoDir, "temporary-git-dir-*")
+	if err != nil {
+		return "", fmt.Errorf("allocate pinned frigo status directory: %w", err)
+	}
+	defer func() {
+		if err := os.RemoveAll(gitDir); err != nil {
+			returnErr = errors.Join(returnErr, fmt.Errorf("remove pinned frigo status directory: %w", err))
+		}
+	}()
+
+	for filename, contents := range map[string]string{
+		"commondir": w.repo.HistoryDir + "\n",
+		"HEAD":      oid + "\n",
+	} {
+		if err := os.WriteFile(filepath.Join(gitDir, filename), []byte(contents), 0o600); err != nil {
+			return "", fmt.Errorf("write pinned frigo %s: %w", filename, err)
+		}
+	}
+	commandArgs := append([]string{"--git-dir=" + gitDir, "--work-tree=" + w.repo.Root}, args...)
+	output, err = client.Output(ctx, w.repo.Root, commandArgs...)
+	return output, err
 }
 
 func (w *Workspace) resolveHistoryBase(ctx context.Context) (historyBase, error) {

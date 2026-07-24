@@ -59,7 +59,11 @@ func (w *Workspace) releaseLocked(ctx context.Context, rawPaths []string, force 
 		if err != nil {
 			return registry.ReleaseResult{}, err
 		}
-		dirty, err := w.releaseDirtyPaths(ctx, base, paths)
+		baseOID, err := w.comparisonOID(ctx, base)
+		if err != nil {
+			return registry.ReleaseResult{}, err
+		}
+		dirty, err := w.releaseDirtyPaths(ctx, base, baseOID, paths)
 		if err != nil {
 			return registry.ReleaseResult{}, err
 		}
@@ -107,7 +111,7 @@ func (w *Workspace) releaseLocked(ctx context.Context, rawPaths []string, force 
 	return result, nil
 }
 
-func (w *Workspace) releaseDirtyPaths(ctx context.Context, base historyBase, paths []string) ([]string, error) {
+func (w *Workspace) releaseDirtyPaths(ctx context.Context, base historyBase, baseOID string, paths []string) ([]string, error) {
 	intentPaths, err := w.intentPaths(paths)
 	if err != nil {
 		return nil, err
@@ -115,15 +119,19 @@ func (w *Workspace) releaseDirtyPaths(ctx context.Context, base historyBase, pat
 
 	dirty := make([]string, 0, len(paths))
 	if err := w.withTemporaryIndexAt(ctx, base, intentPaths, func(client git.Client) error {
+		if _, err := w.privateOutput(ctx, client, "update-index", "-q", "--refresh"); err != nil {
+			return fmt.Errorf("refresh temporary frigo index: %w", err)
+		}
 		for _, candidate := range paths {
-			args := []string{"status", "--porcelain", "--untracked-files=all", "--", candidate}
-			output, err := w.privateOutput(ctx, client, args...)
-			if err != nil {
-				return fmt.Errorf("inspect frigo changes under %s: %w", candidate, err)
+			_, err := w.privateOutput(ctx, client, "diff-index", "--quiet", baseOID, "--", candidate)
+			if err == nil {
+				continue
 			}
-			if output != "" {
+			if code, ok := git.ExitCode(err); ok && code == 1 {
 				dirty = append(dirty, candidate)
+				continue
 			}
+			return fmt.Errorf("inspect frigo changes under %s: %w", candidate, err)
 		}
 		return nil
 	}); err != nil {

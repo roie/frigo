@@ -93,10 +93,10 @@ func parseReleaseArgs(args []string) (parsedCommand, *usageError) {
 			case "--":
 				options = false
 				continue
-			case "--all":
+			case "-all", "--all":
 				all = true
 				continue
-			case "--force":
+			case "-force", "--force":
 				force = true
 				continue
 			default:

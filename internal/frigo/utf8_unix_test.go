@@ -58,6 +58,42 @@ func TestAddRejectsInvalidUTF8PathBeforeMutation(t *testing.T) {
 	assertNoTemporaryIndexes(t, ws)
 }
 
+func TestAddRejectsInvalidUTF8PathBeforeInitializingLinkedStore(t *testing.T) {
+	ws, _, root := newLinkedWorkspace(t)
+	invalid := string([]byte{'b', 'a', 'd', '-', 0xff})
+	if err := os.WriteFile(filepath.Join(root, invalid), []byte("content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	gitDir := ws.repo.GitDir
+	commonFrigoDir := ws.repo.CommonFrigoDir
+	excludePath := ws.repo.ExcludePath
+	lockPath := ws.repo.OperationLockPath
+	beforeGitDir := snapshotManagedTree(t, gitDir)
+	beforeExclude := snapshotManagedPath(t, excludePath)
+	for _, path := range []string{commonFrigoDir, lockPath} {
+		if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("unexpected preexisting managed path %s: %v", path, statErr)
+		}
+	}
+
+	result, err := ws.Add(context.Background(), []string{invalid})
+	if err == nil || !strings.Contains(err.Error(), "not a valid UTF-8 path") {
+		t.Fatalf("Add() error = %v", err)
+	}
+	if len(result.Added) != 0 || len(result.ReleasedCovered) != 0 || len(result.AlreadyOwned) != 0 {
+		t.Fatalf("Add() result = %#v, want zero value", result)
+	}
+
+	assertManagedTreeUnchanged(t, gitDir, beforeGitDir)
+	assertManagedPathUnchanged(t, excludePath, beforeExclude)
+	for _, path := range []string{commonFrigoDir, lockPath} {
+		if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("managed path created at %s: %v", path, statErr)
+		}
+	}
+}
+
 func snapshotHistoryState(t *testing.T, root string) string {
 	t.Helper()
 	var entries []string
