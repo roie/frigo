@@ -419,6 +419,58 @@ func TestDoctorDiagnosesUnsupportedPreV02LinkedState(t *testing.T) {
 	assertDoctorIssue(t, result, "unsupported-pre-v0.2", legacy, false)
 }
 
+func TestDoctorFromMainDiagnosesUnsupportedPreV02StateInActiveSiblingWithoutMutation(t *testing.T) {
+	linked, mainRoot, _ := newLinkedWorkspace(t)
+	legacy := filepath.Join(linked.repo.GitDir, "frigo")
+	if err := os.MkdirAll(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(legacy, "marker")
+	if err := os.WriteFile(marker, []byte("legacy\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	repo, err := repository.Discover(context.Background(), gitpkg.Client{Path: "git"}, mainRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := NewWorkspace(repo, gitpkg.Client{Path: "git"}, mainRoot)
+	result, err := ws.Doctor(context.Background(), DoctorOptions{Repair: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDoctorIssue(t, result, "unsupported-pre-v0.2", legacy, false)
+	if len(result.Planned) != 0 || len(result.Applied) != 0 {
+		t.Fatalf("doctor attempted to repair unsupported sibling state: %#v", result)
+	}
+	if got, err := os.ReadFile(marker); err != nil || string(got) != "legacy\n" {
+		t.Fatalf("unsupported sibling state changed: %q, %v", got, err)
+	}
+}
+
+func TestDoctorIgnoresUnsupportedStateInInactiveAdminDirectory(t *testing.T) {
+	_, mainRoot, _ := newLinkedWorkspace(t)
+	repo, err := repository.Discover(context.Background(), gitpkg.Client{Path: "git"}, mainRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleAdmin := filepath.Join(repo.CommonDir, "worktrees", "stale")
+	legacy := filepath.Join(staleAdmin, "frigo")
+	if err := os.MkdirAll(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staleAdmin, "gitdir"), []byte(filepath.Join(t.TempDir(), ".git")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result := diagnoseDoctor(t, NewWorkspace(repo, gitpkg.Client{Path: "git"}, mainRoot))
+	for _, issue := range result.Issues {
+		if issue.Code == "unsupported-pre-v0.2" && issue.Path == legacy {
+			t.Fatalf("doctor reported inactive admin state: %#v", issue)
+		}
+	}
+}
+
 func TestDoctorRepairDoesNotMutateAlongsideUnsupportedPreV02State(t *testing.T) {
 	ws := newDoctorWorkspace(t, true)
 	legacy := filepath.Join(ws.repo.GitDir, "frigo")
@@ -454,19 +506,32 @@ func TestDoctorReportsOnlyOperationLockMetadataWhenCommonLockUnavailable(t *test
 		t.Fatal(err)
 	}
 
-	result, err := ws.Doctor(context.Background(), DoctorOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Issues) != 1 {
-		t.Fatalf("Doctor() issues = %#v, want only operation lock issue", result.Issues)
-	}
-	issue := result.Issues[0]
-	if issue.Code != "operation-lock-unavailable" || issue.Path != ws.repo.OperationLockPath {
-		t.Fatalf("Doctor() issue = %#v, want operation lock metadata", issue)
-	}
-	if !strings.Contains(issue.Message, "held-by-doctor-test") {
-		t.Fatalf("Doctor() lock message = %q, want owner operation", issue.Message)
+	for _, repair := range []bool{false, true} {
+		result, err := ws.Doctor(context.Background(), DoctorOptions{Repair: repair})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result.Issues) != 1 {
+			t.Fatalf("Doctor(repair=%t) issues = %#v, want only operation lock issue", repair, result.Issues)
+		}
+		issue := result.Issues[0]
+		if issue.Code != "operation-lock-unavailable" || issue.Path != ws.repo.OperationLockPath {
+			t.Fatalf("Doctor(repair=%t) issue = %#v, want operation lock metadata", repair, issue)
+		}
+		for _, want := range []string{
+			"held-by-doctor-test",
+			ws.repo.OperationLockPath,
+			"verify that no Frigo process is still running for this repository",
+			"manually delete " + ws.repo.OperationLockPath,
+			"doctor will never remove this lock",
+		} {
+			if !strings.Contains(issue.Message, want) {
+				t.Fatalf("Doctor(repair=%t) lock message = %q, want %q", repair, issue.Message, want)
+			}
+		}
+		if _, err := os.Lstat(ws.repo.OperationLockPath); err != nil {
+			t.Fatalf("Doctor(repair=%t) removed operation lock: %v", repair, err)
+		}
 	}
 }
 

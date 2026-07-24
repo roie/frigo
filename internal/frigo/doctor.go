@@ -83,9 +83,13 @@ func (w *Workspace) DoctorWithPlan(ctx context.Context, options DoctorOptions, b
 	operationLock, acquireErr := lockfile.Acquire(ctx, w.repo.OperationLockPath, "doctor", w.lockWait)
 	if acquireErr != nil {
 		result.Issues = []DoctorIssue{{
-			Code:    "operation-lock-unavailable",
-			Path:    w.repo.OperationLockPath,
-			Message: acquireErr.Error(),
+			Code: "operation-lock-unavailable",
+			Path: w.repo.OperationLockPath,
+			Message: fmt.Sprintf(
+				"%v; verify that no Frigo process is still running for this repository, then manually delete %s; doctor will never remove this lock",
+				acquireErr,
+				w.repo.OperationLockPath,
+			),
 		}}
 		return result, nil
 	}
@@ -138,14 +142,7 @@ func (w *Workspace) rerunDoctorDiagnosisLocked(ctx context.Context) ([]DoctorIss
 
 func (w *Workspace) diagnoseDoctorLocked(ctx context.Context) doctorState {
 	state := doctorState{repo: w.repo}
-	if w.repo.LinkedWorktree {
-		legacy := filepath.Join(w.repo.GitDir, "frigo")
-		if _, err := os.Lstat(legacy); err == nil {
-			state.add("unsupported-pre-v0.2", legacy, "linked worktree has unsupported pre-v0.2 metadata", false)
-		} else if !os.IsNotExist(err) {
-			state.add("metadata-malformed", legacy, fmt.Sprintf("inspect unsupported metadata: %v", err), false)
-		}
-	}
+	w.inspectUnsupportedLinkedState(&state)
 
 	state.stores = w.inspectDoctorStores(&state)
 	state.pointerEvidence = w.inspectDoctorPointerRoots()
@@ -268,6 +265,34 @@ func inspectDoctorMetadataFile(state *doctorState, filename, label string) ([]by
 	return data, true
 }
 
+func (w *Workspace) inspectUnsupportedLinkedState(state *doctorState) {
+	adminRoot := filepath.Join(w.repo.CommonDir, "worktrees")
+	entries, err := os.ReadDir(adminRoot)
+	if os.IsNotExist(err) {
+		return
+	}
+	if err != nil {
+		state.add("metadata-malformed", adminRoot, fmt.Sprintf("scan active Git worktree administration: %v", err), false)
+		return
+	}
+	for _, entry := range entries {
+		adminPath := filepath.Join(adminRoot, entry.Name())
+		info, statErr := os.Lstat(adminPath)
+		if statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			continue
+		}
+		if _, ok := activeDoctorCheckout(adminPath); !ok {
+			continue
+		}
+		legacy := filepath.Join(adminPath, "frigo")
+		if _, err := os.Lstat(legacy); err == nil {
+			state.add("unsupported-pre-v0.2", legacy, "active linked worktree has unsupported pre-v0.2 metadata", false)
+		} else if !os.IsNotExist(err) {
+			state.add("metadata-malformed", legacy, fmt.Sprintf("inspect unsupported metadata: %v", err), false)
+		}
+	}
+}
+
 func (w *Workspace) inspectDoctorPointerRoots() map[string][]doctorPointerEvidence {
 	evidenceByID := make(map[string][]doctorPointerEvidence)
 	adminRoot := filepath.Join(w.repo.CommonDir, "worktrees")
@@ -287,21 +312,30 @@ func (w *Workspace) inspectDoctorPointerRoots() map[string][]doctorPointerEviden
 			continue
 		}
 		evidence := doctorPointerEvidence{path: pointerPath}
-		checkoutGitFile, relationshipOK := readDoctorRelationshipPath(filepath.Join(adminPath, "gitdir"), "")
-		if relationshipOK {
-			checkoutGitFile = resolveDoctorRelationshipPath(adminPath, checkoutGitFile)
-			if filepath.Base(checkoutGitFile) == ".git" {
-				checkoutRoot := filepath.Clean(filepath.Dir(checkoutGitFile))
-				adminFromCheckout, reciprocalOK := readDoctorRelationshipPath(checkoutGitFile, "gitdir: ")
-				if reciprocalOK && resolveDoctorRelationshipPath(checkoutRoot, adminFromCheckout) == filepath.Clean(adminPath) {
-					evidence.checkoutRoot = checkoutRoot
-					evidence.live = true
-				}
-			}
+		if checkoutRoot, ok := activeDoctorCheckout(adminPath); ok {
+			evidence.checkoutRoot = checkoutRoot
+			evidence.live = true
 		}
 		evidenceByID[id] = append(evidenceByID[id], evidence)
 	}
 	return evidenceByID
+}
+
+func activeDoctorCheckout(adminPath string) (string, bool) {
+	checkoutGitFile, ok := readDoctorRelationshipPath(filepath.Join(adminPath, "gitdir"), "")
+	if !ok {
+		return "", false
+	}
+	checkoutGitFile = resolveDoctorRelationshipPath(adminPath, checkoutGitFile)
+	if filepath.Base(checkoutGitFile) != ".git" {
+		return "", false
+	}
+	checkoutRoot := filepath.Clean(filepath.Dir(checkoutGitFile))
+	adminFromCheckout, ok := readDoctorRelationshipPath(checkoutGitFile, "gitdir: ")
+	if !ok || resolveDoctorRelationshipPath(checkoutRoot, adminFromCheckout) != filepath.Clean(adminPath) {
+		return "", false
+	}
+	return checkoutRoot, true
 }
 
 func readDoctorRelationshipPath(filename, prefix string) (string, bool) {

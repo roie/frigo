@@ -46,6 +46,7 @@ Requirements:
 
 - An existing Git repository
 - Git 2.23 or newer on `PATH`
+- Node.js 18 or newer for the npm package and launcher
 
 Supported platforms:
 
@@ -142,6 +143,7 @@ shows changes for frigo-managed files.
 frigo
 frigo add [--] <path>...
 frigo release [--force] [--] <path>...
+frigo release [--force] --all
 frigo status
 frigo list
 frigo ls
@@ -151,6 +153,8 @@ frigo commit -a -m <message>
 frigo commit -am <message>
 frigo log
 frigo restore [--] <path>...
+frigo doctor
+frigo doctor --repair
 frigo help
 frigo --help
 frigo --version
@@ -262,8 +266,59 @@ This shows commits from frigo's separate history, not commits from the main repo
 
 ## Doctor and repair
 
-frigo doctor is read-only. It reports metadata problems and never mutates anything by default.
-frigo doctor --repair prints the complete plan first, then applies only bounded repairs that are unambiguous and safe.
+Run a read-only repository-wide diagnosis:
+
+```bash
+frigo doctor
+```
+
+`frigo doctor` reports deterministic `issue` lines and does not change Frigo
+metadata. It checks the current store, agreed active linked-worktree
+administration, stable stores, pointers, lifecycle locks, exclusions,
+attributes, and history.
+
+To request bounded repairs:
+
+```bash
+frigo doctor --repair
+```
+
+`frigo doctor --repair` prints the complete plan before the first change,
+applies only unambiguous safe repairs, and diagnoses the repository again
+afterward. It does not delete history, adopt unsupported pre-v0.2 state,
+rewrite suspect paths, remove orphan stores, or clear foreign locks.
+
+Exit status:
+
+- `0`: diagnosis is healthy, or repair completed with no remaining issues;
+- `1`: one or more issues remain, or diagnosis/repair failed;
+- `2`: command-line usage is invalid.
+
+### Recover an orphan store
+
+An `orphan-store` issue means a stable linked-worktree store has no unique,
+exact live checkout/admin/pointer/manifest association. Doctor reports the
+exact store path and leaves it unchanged.
+
+If the original checkout still exists, first use Git to restore its reciprocal
+worktree administration, then run `frigo doctor` from that checkout. Review
+`frigo doctor --repair` only if it offers an unambiguous pointer repair. If the
+checkout or administration is gone, preserve the reported store, inspect its
+`manifest.json` and `history.git`, and recover any needed history to a safe
+location before considering manual cleanup. Doctor never adopts or deletes an
+orphan store.
+
+### Recover a stale common operation lock
+
+An `operation-lock-unavailable` issue reports the exact lock path, normally
+`$GIT_COMMON_DIR/frigo.lock`, and its recorded owner details: operation, PID,
+host, and start time.
+
+Verify that no Frigo process is still running for this repository, using the
+recorded owner details and the exact repository named by the issue. Only after
+that verification, manually delete the exact lock path shown in the issue.
+`frigo doctor`, including `frigo doctor --repair`, never removes the common
+operation lock.
 
 ## Restore files
 

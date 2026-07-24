@@ -18,15 +18,29 @@ mkdir -p \
 
 ldflags="-s -w -X github.com/roie/frigo/internal/cli.version=${version}"
 GOFLAGS=-mod=readonly GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o "$stage/vendor/linux-x64/frigo" "$repo_root/cmd/frigo"
-cp "$stage/vendor/linux-x64/frigo" "$stage/vendor/linux-arm64/frigo"
-for file in \
-	"$stage/vendor/win32-x64/frigo.exe" \
-	"$stage/vendor/win32-arm64/frigo.exe" \
-	"$stage/vendor/darwin-x64/frigo" \
-	"$stage/vendor/darwin-arm64/frigo"; do
-	printf '#!/bin/sh\nexit 0\n' >"$file"
-	chmod +x "$file"
-done
+GOFLAGS=-mod=readonly GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o "$stage/vendor/linux-arm64/frigo" "$repo_root/cmd/frigo"
+GOFLAGS=-mod=readonly GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o "$stage/vendor/win32-x64/frigo.exe" "$repo_root/cmd/frigo"
+GOFLAGS=-mod=readonly GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o "$stage/vendor/win32-arm64/frigo.exe" "$repo_root/cmd/frigo"
+GOFLAGS=-mod=readonly GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o "$stage/vendor/darwin-x64/frigo" "$repo_root/cmd/frigo"
+GOFLAGS=-mod=readonly GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o "$stage/vendor/darwin-arm64/frigo" "$repo_root/cmd/frigo"
+
+assert_target() {
+	local binary=$1
+	local expected=$2
+	local description
+	description=$(file -b "$binary")
+	if [[ "$description" != *"$expected"* ]]; then
+		printf 'unexpected target for %s\nexpected: %s\nactual: %s\n' "$binary" "$expected" "$description" >&2
+		exit 1
+	fi
+}
+
+assert_target "$stage/vendor/linux-x64/frigo" "ELF 64-bit LSB executable, x86-64"
+assert_target "$stage/vendor/linux-arm64/frigo" "ELF 64-bit LSB executable, ARM aarch64"
+assert_target "$stage/vendor/win32-x64/frigo.exe" "PE32+ executable (console) x86-64"
+assert_target "$stage/vendor/win32-arm64/frigo.exe" "PE32+ executable (console) Aarch64"
+assert_target "$stage/vendor/darwin-x64/frigo" "Mach-O 64-bit x86_64 executable"
+assert_target "$stage/vendor/darwin-arm64/frigo" "Mach-O 64-bit arm64 executable"
 
 "$repo_root/scripts/build-npm-package.sh" "$version" "$stage"
 
