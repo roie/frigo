@@ -232,7 +232,7 @@ jobs:
           if published=$(npm view "frigo@${version}" version 2>/dev/null) && [ "$published" = "$version" ]; then
             echo "frigo@${version} is already published"
           else
-            npm publish "npm-dist/$TARBALL" --access public --provenance
+            npm publish "./npm-dist/$TARBALL" --access public --provenance
           fi
 
   release-smoke:

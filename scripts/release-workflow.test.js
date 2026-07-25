@@ -25,6 +25,7 @@ test("release publication is draft-first and resumable", () => {
 	assert.match(workflow, /gh release upload[^\n]*--clobber/);
 	assert.match(workflow, /gh release edit[^\n]*--draft=false/);
 	assert.match(workflow, /npm view "frigo@\$\{version\}" version/);
+	assert.match(workflow, /npm publish "\.\/npm-dist\/\$TARBALL" --access public --provenance/);
 });
 
 test("all local package gates run on the publish tarball before GitHub release mutation", () => {
@@ -46,7 +47,7 @@ test("workflow avoids shell interpolation hazards", () => {
 });
 
 test("CI uses least privilege and non-persisted checkout credentials", () => {
-	assert.match(ciWorkflow, /permissions:\n  contents: read/);
+	assert.match(ciWorkflow, /permissions:\n {2}contents: read/);
 	const checkoutCount = (ciWorkflow.match(/uses: actions\/checkout@/g) || []).length;
 	const nonPersistentCount = (ciWorkflow.match(/persist-credentials: false/g) || []).length;
 	assert.equal(checkoutCount, 2);
