@@ -107,11 +107,12 @@ func resolveFixturePath(root, rel string) (string, error) {
 	if rel == "" {
 		return "", fmt.Errorf("invalid fixture path %q", rel)
 	}
-	if filepath.IsAbs(rel) {
+	nativeRel := filepath.FromSlash(rel)
+	if filepath.IsAbs(nativeRel) {
 		return "", fmt.Errorf("fixture path must be relative: %q", rel)
 	}
-	cleanRel := filepath.Clean(rel)
-	if cleanRel != rel || cleanRel == "." || cleanRel == ".." || strings.HasPrefix(cleanRel, ".."+string(filepath.Separator)) {
+	cleanRel := filepath.Clean(nativeRel)
+	if cleanRel != nativeRel || cleanRel == "." || cleanRel == ".." || strings.HasPrefix(cleanRel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("fixture path escapes root: %q", rel)
 	}
 	rootAbs, err := filepath.Abs(root)
@@ -119,7 +120,7 @@ func resolveFixturePath(root, rel string) (string, error) {
 		return "", fmt.Errorf("resolve fixture root: %w", err)
 	}
 	rootAbs = filepath.Clean(rootAbs)
-	target := filepath.Clean(filepath.Join(rootAbs, rel))
+	target := filepath.Clean(filepath.Join(rootAbs, cleanRel))
 	relative, err := filepath.Rel(rootAbs, target)
 	if err != nil {
 		return "", fmt.Errorf("resolve fixture path: %w", err)

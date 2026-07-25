@@ -3,6 +3,7 @@ package atomicfile
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -26,7 +27,9 @@ func TestWriteCreatesParentsAndWritesData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := info.Mode().Perm(), os.FileMode(0o640); got != want {
-		t.Fatalf("file mode = %v, want %v", got, want)
+	if runtime.GOOS != "windows" {
+		if got, want := info.Mode().Perm(), os.FileMode(0o640); got != want {
+			t.Fatalf("file mode = %v, want %v", got, want)
+		}
 	}
 }

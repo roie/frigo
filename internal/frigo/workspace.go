@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/roie/frigo/internal/git"
@@ -22,7 +23,13 @@ type Workspace struct {
 }
 
 func NewWorkspace(repo repository.Repository, client git.Client, baseDir string) *Workspace {
-	return &Workspace{repo: repo, git: client, baseDir: baseDir, lockWait: operationLockWait}
+	if absolute, err := filepath.Abs(baseDir); err == nil {
+		baseDir = absolute
+	}
+	if resolved, err := filepath.EvalSymlinks(baseDir); err == nil {
+		baseDir = resolved
+	}
+	return &Workspace{repo: repo, git: client, baseDir: filepath.Clean(baseDir), lockWait: operationLockWait}
 }
 
 const operationLockWait = 10 * time.Second

@@ -22,6 +22,24 @@ import (
 	"github.com/roie/frigo/internal/testrepo"
 )
 
+func TestAddAcceptsSymlinkedWorktreePath(t *testing.T) {
+	ws, root := newBareWorkspace(t)
+	alias := filepath.Join(t.TempDir(), "worktree-alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	testrepo.Write(t, root, "PLAN.md", "draft\n")
+	aliased := NewWorkspace(ws.repo, gitpkg.Client{Path: "git"}, alias)
+
+	result, err := aliased.Add(context.Background(), []string{"PLAN.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(result.Added, []string{"PLAN.md"}) {
+		t.Fatalf("Add() added = %v, want [PLAN.md]", result.Added)
+	}
+}
+
 func TestAddInitializesWithoutCommitting(t *testing.T) {
 	ws, root := newBareWorkspace(t)
 	testrepo.Write(t, root, "PLAN.md", "draft\n")
@@ -485,7 +503,10 @@ func TestTemporaryIndexRemovedOnCloseFailure(t *testing.T) {
 	testrepo.Write(t, root, "PLAN.md", "draft\n")
 
 	oldClose := closeTemporaryIndex
-	closeTemporaryIndex = func(*os.File) error { return errors.New("close failed") }
+	closeTemporaryIndex = func(file *os.File) error {
+		_ = file.Close()
+		return errors.New("close failed")
+	}
 	t.Cleanup(func() { closeTemporaryIndex = oldClose })
 
 	base, err := ws.resolveHistoryBase(context.Background())
@@ -1131,7 +1152,11 @@ func saveForTest(t *testing.T, ws *Workspace, message string) {
 		if base.Exists {
 			commitArgs = []string{"commit-tree", tree, "-p", base.OID, "-m", message}
 		}
-		commit, err := ws.privateOutput(context.Background(), client, commitArgs...)
+		identityClient, err := ws.commitClient(context.Background(), client)
+		if err != nil {
+			return err
+		}
+		commit, err := ws.privateOutput(context.Background(), identityClient, commitArgs...)
 		if err != nil {
 			return err
 		}
