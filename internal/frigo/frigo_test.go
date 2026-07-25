@@ -31,7 +31,7 @@ func TestAddAcceptsSymlinkedWorktreePath(t *testing.T) {
 	testrepo.Write(t, root, "PLAN.md", "draft\n")
 	aliased := NewWorkspace(ws.repo, gitpkg.Client{Path: "git"}, alias)
 
-	result, err := aliased.Add(context.Background(), []string{"PLAN.md"})
+	result, err := aliased.Add(context.Background(), []string{filepath.Join(alias, "PLAN.md")})
 	if err != nil {
 		t.Fatal(err)
 	}

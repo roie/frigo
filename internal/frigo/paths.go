@@ -153,6 +153,9 @@ func (w *Workspace) normalizePath(raw string, requireExist bool) (string, error)
 		return "", fmt.Errorf("resolve path %q: %w", raw, err)
 	}
 	absolute = filepath.Clean(absolute)
+	if resolved, resolveErr := filepath.EvalSymlinks(absolute); resolveErr == nil {
+		absolute = resolved
+	}
 	relative, err := filepath.Rel(w.repo.Root, absolute)
 	if err != nil {
 		return "", fmt.Errorf("resolve path %q relative to worktree: %w", raw, err)

@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -126,8 +127,8 @@ func TestRunAgainstRealRepo(t *testing.T) {
 	client := Client{Path: "git"}
 	if got, err := client.Output(context.Background(), root, "rev-parse", "--show-toplevel"); err != nil {
 		t.Fatalf("Output() error = %v", err)
-	} else if got != root {
-		t.Fatalf("Output() = %q, want %q", got, root)
+	} else if normalized := filepath.Clean(filepath.FromSlash(got)); normalized != root {
+		t.Fatalf("Output() = %q (normalized %q), want %q", got, normalized, root)
 	}
 }
 

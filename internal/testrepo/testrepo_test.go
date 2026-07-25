@@ -2,6 +2,7 @@ package testrepo
 
 import (
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -27,6 +28,9 @@ func TestInitWriteReadAndCommitAll(t *testing.T) {
 }
 
 func TestCommitAllTreatsMagicLookingPathAsLiteral(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not permit Git pathspec-magic characters in filenames")
+	}
 	root := Init(t)
 	Write(t, root, ":(glob)*", "literal\n")
 	Write(t, root, "notes.md", "keep me\n")
@@ -81,7 +85,8 @@ func TestGitOutputIncludesStderrOnFailure(t *testing.T) {
 
 func TestOutputTrimsTrailingNewline(t *testing.T) {
 	root := Init(t)
-	if got := Output(t, root, "rev-parse", "--show-toplevel"); got != root {
-		t.Fatalf("Output() = %q, want %q", got, root)
+	got := Output(t, root, "rev-parse", "--show-toplevel")
+	if normalized := filepath.Clean(filepath.FromSlash(got)); normalized != root {
+		t.Fatalf("Output() = %q (normalized %q), want %q", got, normalized, root)
 	}
 }

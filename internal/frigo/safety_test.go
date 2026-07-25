@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -88,6 +89,9 @@ func TestPrivateOperationsRejectEffectiveIgnoreDriftForMissingRoots(t *testing.T
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
+			if runtime.GOOS == "windows" && strings.ContainsAny(tt.path, `:\"`) {
+				t.Skip("filename is not valid on Windows")
+			}
 			ws, root := committedWorkspace(t, tt.path, "saved\n")
 			filename := filepath.Join(root, filepath.FromSlash(tt.path))
 			if err := os.Remove(filename); err != nil {

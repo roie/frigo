@@ -28,10 +28,17 @@ func tempDir(t *testing.T) string {
 		root, err := os.MkdirTemp("/dev/shm", "frigo-test-*")
 		if err == nil {
 			t.Cleanup(func() { _ = os.RemoveAll(root) })
-			return root
+			return canonicalPath(root)
 		}
 	}
-	return t.TempDir()
+	return canonicalPath(t.TempDir())
+}
+
+func canonicalPath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(path)
 }
 
 func Run(t *testing.T, root string, args ...string) {
