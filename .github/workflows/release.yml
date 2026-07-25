@@ -137,51 +137,138 @@ jobs:
         run: |
           version="${VERSION#v}"
           ldflags="-s -w -X github.com/roie/frigo/internal/cli.version=${version}"
-          mkdir -p vendor/linux-x64 vendor/linux-arm64 vendor/win32-x64 vendor/win32-arm64 vendor/darwin-x64 vendor/darwin-arm64
+          mkdir -p vendor/linux-x64 vendor/linux-arm64 vendor/win32-x64 vendor/win32-arm64 vendor/darwin-x64 vendor/darwin-arm64 release-assets
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o vendor/linux-x64/frigo ./cmd/frigo
           GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o vendor/linux-arm64/frigo ./cmd/frigo
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o vendor/win32-x64/frigo.exe ./cmd/frigo
           GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o vendor/win32-arm64/frigo.exe ./cmd/frigo
           GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o vendor/darwin-x64/frigo ./cmd/frigo
           GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o vendor/darwin-arm64/frigo ./cmd/frigo
+          node scripts/build-release-assets.js "$PWD/vendor" "$PWD/release-assets"
+
+      - name: Verify release manifest
+        run: node scripts/build-release-assets.js --verify-manifest "$PWD/release-assets/checksums.json"
 
       - name: Generate npm package files
         env:
           VERSION: ${{ github.ref_name }}
         run: |
           version="${VERSION#v}"
-          scripts/build-npm-package.sh "$version" "$PWD"
+          scripts/build-npm-package.sh "$version" "$PWD/npm-dist" "$PWD/release-assets/checksums.json"
 
-      - name: Pack and smoke test npm package
+      - name: Pack npm package
         id: pack
-        env:
-          VERSION: ${{ github.ref_name }}
         run: |
-          version="${VERSION#v}"
-          tarball="$(npm pack)"
+          cd npm-dist
+          tarball="$(npm pack --silent)"
           echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
-          install_dir="$(mktemp -d)"
-          npm install --prefix "$install_dir" "$tarball"
-          frigo_bin="$install_dir/node_modules/.bin/frigo"
-          test "$("$frigo_bin" --version)" = "frigo ${version}"
-          test -f "$install_dir/node_modules/frigo/vendor/linux-x64/frigo"
-          test -f "$install_dir/node_modules/frigo/vendor/linux-arm64/frigo"
-          test -f "$install_dir/node_modules/frigo/vendor/win32-x64/frigo.exe"
-          test -f "$install_dir/node_modules/frigo/vendor/win32-arm64/frigo.exe"
-          test -f "$install_dir/node_modules/frigo/vendor/darwin-x64/frigo"
-          test -f "$install_dir/node_modules/frigo/vendor/darwin-arm64/frigo"
-          test -f "$install_dir/node_modules/frigo/LICENSE"
+
+      - name: Smoke test packed npm package
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+          VERSION: ${{ github.ref_name }}
+        run: bash scripts/package_test.sh "${VERSION#v}" "$PWD/npm-dist/$TARBALL" "$PWD/release-assets"
+
+      - name: Prepare GitHub release
+        id: github_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if release_state=$(gh release view "$RELEASE_TAG" --json isDraft,isImmutable --jq '[.isDraft, .isImmutable] | @tsv' 2>/dev/null); then
+            read -r is_draft is_immutable <<<"$release_state"
+          else
+            gh release create "$RELEASE_TAG" --draft --generate-notes --verify-tag
+            is_draft=true
+            is_immutable=false
+          fi
+          echo "is_draft=${is_draft}" >> "$GITHUB_OUTPUT"
+          echo "is_immutable=${is_immutable}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload draft release assets
+        if: steps.github_release.outputs.is_draft == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release upload "$RELEASE_TAG" release-assets/* --clobber
+
+      - name: Compare GitHub release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          download_dir="$RUNNER_TEMP/frigo-release-assets"
+          rm -rf "$download_dir"
+          mkdir -p "$download_dir"
+          gh release download "$RELEASE_TAG" --dir "$download_dir" --clobber
+          shopt -s nullglob
+          local_assets=(release-assets/*)
+          remote_assets=("$download_dir"/*)
+          test "${#local_assets[@]}" -eq "${#remote_assets[@]}"
+          for local_asset in "${local_assets[@]}"; do
+            remote_asset="$download_dir/${local_asset##*/}"
+            test -f "$remote_asset"
+            cmp "$local_asset" "$remote_asset"
+          done
+
+      - name: Publish GitHub release
+        if: steps.github_release.outputs.is_draft == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release edit "$RELEASE_TAG" --draft=false
+
+      - name: Verify public release assets
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/verify-release-assets.js "$RELEASE_TAG" "roie/frigo" "$PWD/release-assets/checksums.json"
 
       - name: Publish npm package
         env:
           TARBALL: ${{ steps.pack.outputs.tarball }}
-        run: npm publish "$TARBALL" --access public
+          VERSION: ${{ github.ref_name }}
+        run: |
+          version="${VERSION#v}"
+          if published=$(npm view "frigo@${version}" version 2>/dev/null) && [ "$published" = "$version" ]; then
+            echo "frigo@${version} is already published"
+          else
+            npm publish "npm-dist/$TARBALL" --access public --provenance
+          fi
 
-      - name: Create GitHub release
+  release-smoke:
+    name: Registry smoke test
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Smoke test npm install and npx
+        shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: >-
-          gh release create "$RELEASE_TAG"
-          --title "$RELEASE_TAG"
-          --generate-notes
+          VERSION: ${{ github.ref_name }}
+        run: |
+          version="${VERSION#v}"
+          installed=false
+          for attempt in 1 2 3 4 5; do
+            if npm install -g "frigo@${version}"; then
+              installed=true
+              break
+            fi
+            sleep "$((attempt * 5))"
+          done
+          test "$installed" = true
+          test "$(FRIGO_CACHE_DIR="$RUNNER_TEMP/frigo-global-cache" frigo --version)" = "frigo ${version}"
+          test "$(FRIGO_CACHE_DIR="$RUNNER_TEMP/frigo-npx-cache" npx --yes "frigo@${version}" --version)" = "frigo ${version}"
+
+      - name: Remove global package
+        if: always()
+        shell: bash
+        run: npm uninstall -g frigo || true
