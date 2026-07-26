@@ -284,6 +284,7 @@ jobs:
           package-manager-cache: false
 
       - name: Smoke test npm install and npx
+        timeout-minutes: 5
         shell: bash
         env:
           NPM_CONFIG_CACHE: ${{ runner.temp }}/npm-smoke-cache
@@ -296,13 +297,35 @@ jobs:
           retry_until_deadline() {
             local description="$1"
             shift
-            until "$@"; do
-              if (( SECONDS >= deadline )); then
+            local remaining
+            local wait_seconds
+
+            while true; do
+              remaining=$((deadline - SECONDS))
+              if (( remaining <= 0 )); then
                 echo "::error::${description} did not succeed within five minutes"
                 return 1
               fi
-              echo "${description} is not ready; retrying in 15 seconds"
-              sleep 15
+
+              if "$@"; then
+                if (( SECONDS < deadline )); then
+                  return 0
+                fi
+                echo "::error::${description} did not succeed within five minutes"
+                return 1
+              fi
+
+              remaining=$((deadline - SECONDS))
+              if (( remaining <= 0 )); then
+                echo "::error::${description} did not succeed within five minutes"
+                return 1
+              fi
+              wait_seconds=15
+              if (( wait_seconds > remaining )); then
+                wait_seconds=$remaining
+              fi
+              echo "${description} is not ready; retrying in ${wait_seconds} seconds"
+              sleep "$wait_seconds"
             done
           }
 

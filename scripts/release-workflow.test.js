@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
@@ -15,27 +16,99 @@ const ciWorkflow = fs.readFileSync(
 const releaseSmokeStart = workflow.indexOf("\n  release-smoke:");
 assert.notEqual(releaseSmokeStart, -1, "release-smoke job is missing");
 const releaseSmoke = workflow.slice(releaseSmokeStart);
+const smokeCommandStart = releaseSmoke.indexOf(
+	"\n      - name: Smoke test npm install and npx",
+);
+assert.notEqual(smokeCommandStart, -1, "release smoke command step is missing");
+const smokeCommandEnd = releaseSmoke.indexOf(
+	"\n      - name: Remove global package",
+	smokeCommandStart,
+);
+assert.notEqual(smokeCommandEnd, -1, "release smoke cleanup step is missing");
+const smokeCommandStep = releaseSmoke.slice(smokeCommandStart, smokeCommandEnd);
+const runMarker = "\n        run: |\n";
+const smokeScriptStart = smokeCommandStep.indexOf(runMarker);
+assert.notEqual(smokeScriptStart, -1, "release smoke Bash script is missing");
+const smokeScript = smokeCommandStep
+	.slice(smokeScriptStart + runMarker.length)
+	.replace(/^ {10}/gm, "");
+const retryHelperStart = smokeScript.indexOf("retry_until_deadline() {");
+assert.notEqual(retryHelperStart, -1, "retry helper is missing");
+const retryHelperEnd = smokeScript.indexOf("\n}\n", retryHelperStart);
+assert.notEqual(retryHelperEnd, -1, "retry helper closing brace is missing");
+const retryHelper = smokeScript.slice(retryHelperStart, retryHelperEnd + 2);
 
-test("release smoke is cross-platform and does not persist checkout credentials", () => {
+test("release smoke uses the exact cross-platform runner matrix", () => {
+	const matrix = releaseSmoke.match(/^ {8}os: \[([^\]]+)\]$/m);
+	assert.ok(matrix, "release smoke OS matrix is missing");
+	assert.deepEqual(matrix[1].split(", "), [
+		"ubuntu-latest",
+		"macos-latest",
+		"windows-latest",
+	]);
 	assert.doesNotMatch(releaseSmoke, /actions\/checkout/);
-	assert.match(releaseSmoke, /shell: bash/);
-	assert.match(releaseSmoke, /npm install -g/);
-	assert.match(releaseSmoke, /npx --yes/);
+	assert.match(smokeCommandStep, /shell: bash/);
+	assert.match(smokeCommandStep, /npm install -g/);
+	assert.match(smokeCommandStep, /npx --yes/);
 });
 
 test("release smoke retries stale registry metadata until a shared deadline", () => {
 	assert.match(
-		releaseSmoke,
+		smokeCommandStep,
 		/NPM_CONFIG_CACHE: \$\{\{ runner\.temp \}\}\/npm-smoke-cache/,
 	);
-	assert.match(releaseSmoke, /NPM_CONFIG_PREFER_ONLINE: "true"/);
-	assert.match(releaseSmoke, /deadline=\$\(\(SECONDS \+ 300\)\)/);
+	assert.match(smokeCommandStep, /NPM_CONFIG_PREFER_ONLINE: "true"/);
+	assert.match(smokeCommandStep, /timeout-minutes: 5/);
+	assert.match(smokeCommandStep, /deadline=\$\(\(SECONDS \+ 300\)\)/);
 	assert.match(
-		releaseSmoke,
+		smokeCommandStep,
 		/retry_until_deadline "npm install" npm install -g "frigo@\$\{version\}"/,
 	);
-	assert.match(releaseSmoke, /retry_until_deadline "npx" check_npx/);
-	assert.doesNotMatch(releaseSmoke, /for attempt in 1 2 3 4 5/);
+	assert.match(smokeCommandStep, /retry_until_deadline "npx" check_npx/);
+	assert.doesNotMatch(smokeCommandStep, /for attempt in 1 2 3 4 5/);
+});
+
+test("embedded retry helper rejects expired work and clips retry sleep", () => {
+	const behaviorScript = [
+		retryHelper,
+		"SECONDS=10",
+		"deadline=10",
+		"started=0",
+		"already_expired_operation() { started=1; return 0; }",
+		'if retry_until_deadline "already expired" already_expired_operation; then exit 91; fi',
+		'test "$started" -eq 0',
+		'printf "already-expired-rejected\\n"',
+		"SECONDS=0",
+		"deadline=1",
+		"started=0",
+		"late_operation() { started=1; SECONDS=$((deadline + 1)); return 0; }",
+		'if retry_until_deadline "late success" late_operation; then exit 92; fi',
+		'test "$started" -eq 1',
+		'printf "late-success-rejected\\n"',
+		"SECONDS=0",
+		"deadline=3",
+		"attempts=0",
+		"always_fails() { attempts=$((attempts + 1)); return 1; }",
+		'sleep() { printf "sleep:%s\\n" "$1"; SECONDS=$((SECONDS + $1)); }',
+		'if retry_until_deadline "sleep clipping" always_fails; then exit 93; fi',
+		'test "$attempts" -eq 1',
+		'printf "sleep-clipped\\n"',
+	].join("\n");
+	const result = spawnSync("bash", ["-c", behaviorScript], {
+		encoding: "utf8",
+		timeout: 5_000,
+	});
+
+	assert.ifError(result.error);
+	assert.equal(
+		result.status,
+		0,
+		`embedded retry helper failed:\n${result.stdout}${result.stderr}`,
+	);
+	assert.match(result.stdout, /already-expired-rejected/);
+	assert.match(result.stdout, /late-success-rejected/);
+	assert.match(result.stdout, /sleep:3/);
+	assert.match(result.stdout, /sleep-clipped/);
 });
 
 test("release publication is draft-first and resumable", () => {
