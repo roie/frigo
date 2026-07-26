@@ -23,6 +23,21 @@ test("release smoke is cross-platform and does not persist checkout credentials"
 	assert.match(releaseSmoke, /npx --yes/);
 });
 
+test("release smoke retries stale registry metadata until a shared deadline", () => {
+	assert.match(
+		releaseSmoke,
+		/NPM_CONFIG_CACHE: \$\{\{ runner\.temp \}\}\/npm-smoke-cache/,
+	);
+	assert.match(releaseSmoke, /NPM_CONFIG_PREFER_ONLINE: "true"/);
+	assert.match(releaseSmoke, /deadline=\$\(\(SECONDS \+ 300\)\)/);
+	assert.match(
+		releaseSmoke,
+		/retry_until_deadline "npm install" npm install -g "frigo@\$\{version\}"/,
+	);
+	assert.match(releaseSmoke, /retry_until_deadline "npx" check_npx/);
+	assert.doesNotMatch(releaseSmoke, /for attempt in 1 2 3 4 5/);
+});
+
 test("release publication is draft-first and resumable", () => {
 	assert.match(workflow, /gh release view/);
 	assert.match(workflow, /isDraft/);
@@ -57,9 +72,11 @@ test("all local package gates run on the publish tarball before GitHub release m
 
 test("manual recovery reuses a public release without mutating it", () => {
 	assert.match(workflow, /workflow_dispatch:[\s\S]*release_tag:/);
-	const checkoutCount = (workflow.match(/uses: actions\/checkout@/g) || []).length;
+	const checkoutCount = (workflow.match(/uses: actions\/checkout@/g) || [])
+		.length;
 	const resolvedCheckoutCount = (
-		workflow.match(/ref: \$\{\{ inputs\.release_tag \|\| github\.ref \}\}/g) || []
+		workflow.match(/ref: \$\{\{ inputs\.release_tag \|\| github\.ref \}\}/g) ||
+		[]
 	).length;
 	assert.equal(resolvedCheckoutCount, checkoutCount);
 	assert.match(workflow, /Download existing public release assets/);
@@ -74,9 +91,15 @@ test("manual recovery reuses a public release without mutating it", () => {
 		/VERSION: \$\{\{ inputs\.release_tag \|\| github\.ref_name \}\}/,
 	);
 
-	const download = workflow.indexOf("- name: Download existing public release assets");
-	const verify = workflow.indexOf("- name: Verify existing public release assets");
-	const packageGeneration = workflow.indexOf("- name: Generate npm package files");
+	const download = workflow.indexOf(
+		"- name: Download existing public release assets",
+	);
+	const verify = workflow.indexOf(
+		"- name: Verify existing public release assets",
+	);
+	const packageGeneration = workflow.indexOf(
+		"- name: Generate npm package files",
+	);
 	assert.ok(download >= 0 && verify > download && packageGeneration > verify);
 
 	for (const name of [

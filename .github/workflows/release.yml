@@ -286,20 +286,33 @@ jobs:
       - name: Smoke test npm install and npx
         shell: bash
         env:
+          NPM_CONFIG_CACHE: ${{ runner.temp }}/npm-smoke-cache
+          NPM_CONFIG_PREFER_ONLINE: "true"
           VERSION: ${{ inputs.release_tag || github.ref_name }}
         run: |
           version="${VERSION#v}"
-          installed=false
-          for attempt in 1 2 3 4 5; do
-            if npm install -g "frigo@${version}"; then
-              installed=true
-              break
-            fi
-            sleep "$((attempt * 5))"
-          done
-          test "$installed" = true
+          deadline=$((SECONDS + 300))
+
+          retry_until_deadline() {
+            local description="$1"
+            shift
+            until "$@"; do
+              if (( SECONDS >= deadline )); then
+                echo "::error::${description} did not succeed within five minutes"
+                return 1
+              fi
+              echo "${description} is not ready; retrying in 15 seconds"
+              sleep 15
+            done
+          }
+
+          check_npx() {
+            test "$(FRIGO_CACHE_DIR="$RUNNER_TEMP/frigo-npx-cache" npx --yes "frigo@${version}" --version)" = "frigo ${version}"
+          }
+
+          retry_until_deadline "npm install" npm install -g "frigo@${version}"
           test "$(FRIGO_CACHE_DIR="$RUNNER_TEMP/frigo-global-cache" frigo --version)" = "frigo ${version}"
-          test "$(FRIGO_CACHE_DIR="$RUNNER_TEMP/frigo-npx-cache" npx --yes "frigo@${version}" --version)" = "frigo ${version}"
+          retry_until_deadline "npx" check_npx
 
       - name: Remove global package
         if: always()
