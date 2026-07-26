@@ -4,8 +4,14 @@ const path = require("node:path");
 const test = require("node:test");
 
 const workflowDirectory = path.join(__dirname, "..", ".github", "workflows");
-const workflow = fs.readFileSync(path.join(workflowDirectory, "release.yml"), "utf8");
-const ciWorkflow = fs.readFileSync(path.join(workflowDirectory, "ci.yml"), "utf8");
+const workflow = fs.readFileSync(
+	path.join(workflowDirectory, "release.yml"),
+	"utf8",
+);
+const ciWorkflow = fs.readFileSync(
+	path.join(workflowDirectory, "ci.yml"),
+	"utf8",
+);
 const releaseSmokeStart = workflow.indexOf("\n  release-smoke:");
 assert.notEqual(releaseSmokeStart, -1, "release-smoke job is missing");
 const releaseSmoke = workflow.slice(releaseSmokeStart);
@@ -25,7 +31,10 @@ test("release publication is draft-first and resumable", () => {
 	assert.match(workflow, /gh release upload[^\n]*--clobber/);
 	assert.match(workflow, /gh release edit[^\n]*--draft=false/);
 	assert.match(workflow, /npm view "frigo@\$\{version\}" version/);
-	assert.match(workflow, /npm publish "\.\/npm-dist\/\$TARBALL" --access public --provenance/);
+	assert.match(
+		workflow,
+		/npm publish "\.\/npm-dist\/\$TARBALL" --access public --provenance/,
+	);
 });
 
 test("all local package gates run on the publish tarball before GitHub release mutation", () => {
@@ -34,10 +43,52 @@ test("all local package gates run on the publish tarball before GitHub release m
 	const releaseMutation = workflow.indexOf("- name: Prepare GitHub release");
 	assert.ok(pack >= 0, "pack step is missing");
 	assert.ok(smoke > pack, "packed package smoke must follow npm pack");
-	assert.ok(releaseMutation > smoke, "GitHub release mutation must follow local smoke tests");
+	assert.ok(
+		releaseMutation > smoke,
+		"GitHub release mutation must follow local smoke tests",
+	);
 	const smokeStep = workflow.slice(smoke, releaseMutation);
 	assert.match(smokeStep, /TARBALL: \$\{\{ steps\.pack\.outputs\.tarball \}\}/);
-	assert.match(smokeStep, /package_test\.sh "\$\{VERSION#v\}" "\$PWD\/npm-dist\/\$TARBALL" "\$PWD\/release-assets"/);
+	assert.match(
+		smokeStep,
+		/package_test\.sh "\$\{VERSION#v\}" "\$PWD\/npm-dist\/\$TARBALL" "\$PWD\/release-assets"/,
+	);
+});
+
+test("manual recovery reuses a public release without mutating it", () => {
+	assert.match(workflow, /workflow_dispatch:[\s\S]*release_tag:/);
+	const checkoutCount = (workflow.match(/uses: actions\/checkout@/g) || []).length;
+	const resolvedCheckoutCount = (
+		workflow.match(/ref: \$\{\{ inputs\.release_tag \|\| github\.ref \}\}/g) || []
+	).length;
+	assert.equal(resolvedCheckoutCount, checkoutCount);
+	assert.match(workflow, /Download existing public release assets/);
+	assert.match(workflow, /Verify existing public release assets/);
+	assert.match(workflow, /gh release view "\$RELEASE_TAG" --json isDraft/);
+	assert.match(
+		workflow,
+		/gh release download "\$RELEASE_TAG" --dir "\$PWD\/release-assets" --clobber/,
+	);
+	assert.match(
+		workflow,
+		/VERSION: \$\{\{ inputs\.release_tag \|\| github\.ref_name \}\}/,
+	);
+
+	const download = workflow.indexOf("- name: Download existing public release assets");
+	const verify = workflow.indexOf("- name: Verify existing public release assets");
+	const packageGeneration = workflow.indexOf("- name: Generate npm package files");
+	assert.ok(download >= 0 && verify > download && packageGeneration > verify);
+
+	for (const name of [
+		"Prepare GitHub release",
+		"Upload draft release assets",
+		"Publish GitHub release",
+	]) {
+		const start = workflow.indexOf(`- name: ${name}`);
+		const end = workflow.indexOf("\n      - name:", start + 1);
+		const step = workflow.slice(start, end === -1 ? undefined : end);
+		assert.match(step, /if: github\.event_name == 'push'/, name);
+	}
 });
 
 test("workflow avoids shell interpolation hazards", () => {
@@ -48,8 +99,11 @@ test("workflow avoids shell interpolation hazards", () => {
 
 test("CI uses least privilege and non-persisted checkout credentials", () => {
 	assert.match(ciWorkflow, /permissions:\n {2}contents: read/);
-	const checkoutCount = (ciWorkflow.match(/uses: actions\/checkout@/g) || []).length;
-	const nonPersistentCount = (ciWorkflow.match(/persist-credentials: false/g) || []).length;
+	const checkoutCount = (ciWorkflow.match(/uses: actions\/checkout@/g) || [])
+		.length;
+	const nonPersistentCount = (
+		ciWorkflow.match(/persist-credentials: false/g) || []
+	).length;
 	assert.equal(checkoutCount, 2);
 	assert.equal(nonPersistentCount, checkoutCount);
 });

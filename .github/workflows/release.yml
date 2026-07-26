@@ -4,12 +4,18 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing public release tag to resume
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -25,6 +31,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Setup Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -55,6 +62,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Setup Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -74,6 +82,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Setup Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -116,6 +125,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Setup Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -131,9 +141,10 @@ jobs:
           package-manager-cache: false
 
       - name: Build package binaries
+        if: github.event_name == 'push'
         env:
           GOFLAGS: -mod=readonly
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ inputs.release_tag || github.ref_name }}
         run: |
           version="${VERSION#v}"
           ldflags="-s -w -X github.com/roie/frigo/internal/cli.version=${version}"
@@ -146,12 +157,33 @@ jobs:
           GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o vendor/darwin-arm64/frigo ./cmd/frigo
           node scripts/build-release-assets.js "$PWD/vendor" "$PWD/release-assets"
 
+      - name: Download existing public release assets
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          case "$RELEASE_TAG" in
+            v*) ;;
+            *) echo "release_tag must start with v" >&2; exit 1 ;;
+          esac
+          is_draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)
+          test "$is_draft" = false
+          mkdir -p "$PWD/release-assets"
+          gh release download "$RELEASE_TAG" --dir "$PWD/release-assets" --clobber
+
+      - name: Verify existing public release assets
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/verify-release-assets.js "$RELEASE_TAG" "roie/frigo" "$PWD/release-assets/checksums.json"
+
       - name: Verify release manifest
         run: node scripts/build-release-assets.js --verify-manifest "$PWD/release-assets/checksums.json"
 
       - name: Generate npm package files
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ inputs.release_tag || github.ref_name }}
         run: |
           version="${VERSION#v}"
           scripts/build-npm-package.sh "$version" "$PWD/npm-dist" "$PWD/release-assets/checksums.json"
@@ -166,14 +198,15 @@ jobs:
       - name: Smoke test packed npm package
         env:
           TARBALL: ${{ steps.pack.outputs.tarball }}
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ inputs.release_tag || github.ref_name }}
         run: bash scripts/package_test.sh "${VERSION#v}" "$PWD/npm-dist/$TARBALL" "$PWD/release-assets"
 
       - name: Prepare GitHub release
+        if: github.event_name == 'push'
         id: github_release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           if release_state=$(gh release view "$RELEASE_TAG" --json isDraft,isImmutable --jq '[.isDraft, .isImmutable] | @tsv' 2>/dev/null); then
             read -r is_draft is_immutable <<<"$release_state"
@@ -186,16 +219,16 @@ jobs:
           echo "is_immutable=${is_immutable}" >> "$GITHUB_OUTPUT"
 
       - name: Upload draft release assets
-        if: steps.github_release.outputs.is_draft == 'true'
+        if: github.event_name == 'push' && steps.github_release.outputs.is_draft == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: gh release upload "$RELEASE_TAG" release-assets/* --clobber
 
       - name: Compare GitHub release assets
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           download_dir="$RUNNER_TEMP/frigo-release-assets"
           rm -rf "$download_dir"
@@ -212,21 +245,21 @@ jobs:
           done
 
       - name: Publish GitHub release
-        if: steps.github_release.outputs.is_draft == 'true'
+        if: github.event_name == 'push' && steps.github_release.outputs.is_draft == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: gh release edit "$RELEASE_TAG" --draft=false
 
       - name: Verify public release assets
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: node scripts/verify-release-assets.js "$RELEASE_TAG" "roie/frigo" "$PWD/release-assets/checksums.json"
 
       - name: Publish npm package
         env:
           TARBALL: ${{ steps.pack.outputs.tarball }}
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ inputs.release_tag || github.ref_name }}
         run: |
           version="${VERSION#v}"
           if published=$(npm view "frigo@${version}" version 2>/dev/null) && [ "$published" = "$version" ]; then
@@ -253,7 +286,7 @@ jobs:
       - name: Smoke test npm install and npx
         shell: bash
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ inputs.release_tag || github.ref_name }}
         run: |
           version="${VERSION#v}"
           installed=false
