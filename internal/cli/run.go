@@ -171,6 +171,12 @@ func runAt(ctx context.Context, args []string, stdin io.Reader, stdout, stderr i
 			return printError(stderr, err)
 		}
 		fmt.Fprintln(stdout, output)
+	case "show":
+		output, err := workspace.Show(ctx, parsed.revision, parsed.paths)
+		if err != nil {
+			return printError(stderr, err)
+		}
+		fmt.Fprintln(stdout, output)
 	case "restore":
 		paths, err := workspace.Restore(ctx, parsed.paths)
 		if err != nil {

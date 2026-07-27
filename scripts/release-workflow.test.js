@@ -210,3 +210,11 @@ test("CI runs release safety tests directly", () => {
 		/node --test \\\n\s+scripts\/release-assets\.test\.js \\\n\s+scripts\/release-workflow\.test\.js \\\n\s+scripts\/verify-release-assets\.test\.js/,
 	);
 });
+
+test("release compatibility tests show on Git 2.23", () => {
+	const start = workflow.indexOf("- name: Run Git 2.23 compatibility tests");
+	assert.notEqual(start, -1, "Git 2.23 compatibility step is missing");
+	const end = workflow.indexOf("\n  release:", start);
+	const compatibilityStep = workflow.slice(start, end === -1 ? undefined : end);
+	assert.match(compatibilityStep, /\^TestShowReportsLatestCommitAndFullPatch\$/);
+});

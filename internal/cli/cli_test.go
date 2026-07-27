@@ -369,6 +369,38 @@ func TestCLICommitAcceptsCombinedFlagAsMessageAndPathValue(t *testing.T) {
 	})
 }
 
+func TestCLIShowDisplaysLatestCommitAndPathFilter(t *testing.T) {
+	root := testrepo.Init(t)
+	testrepo.Write(t, root, "README.md", "main\n")
+	testrepo.CommitAll(t, root, "initial", "README.md")
+	testrepo.Write(t, root, "NOTES.md", "notes body\n")
+	testrepo.Write(t, root, "PLAN.md", "plan body\n")
+	if got := invoke(t, root, "add", "NOTES.md", "PLAN.md"); got.code != 0 {
+		t.Fatalf("add: %+v", got)
+	}
+	if got := invoke(t, root, "commit", "-am", "show checkpoint"); got.code != 0 {
+		t.Fatalf("commit: %+v", got)
+	}
+
+	latest := invoke(t, root, "show")
+	if latest.code != 0 || latest.stderr != "" {
+		t.Fatalf("show latest: %+v", latest)
+	}
+	for _, want := range []string{"show checkpoint", "NOTES.md", "PLAN.md"} {
+		if !strings.Contains(latest.stdout, want) {
+			t.Fatalf("show latest missing %q:\n%s", want, latest.stdout)
+		}
+	}
+
+	filtered := invoke(t, root, "show", "HEAD", "--", "PLAN.md")
+	if filtered.code != 0 || filtered.stderr != "" || !strings.Contains(filtered.stdout, "PLAN.md") {
+		t.Fatalf("show filtered: %+v", filtered)
+	}
+	if strings.Contains(filtered.stdout, "NOTES.md") {
+		t.Fatalf("show filtered unexpectedly contains NOTES.md:\n%s", filtered.stdout)
+	}
+}
+
 func TestAddPrintsNormalizedAlreadyOwnedPath(t *testing.T) {
 	root := testrepo.Init(t)
 	testrepo.Write(t, root, "README.md", "main\n")

@@ -152,6 +152,7 @@ frigo commit -m <message> [--] <path>...
 frigo commit -a -m <message>
 frigo commit -am <message>
 frigo log
+frigo show [<revision>] [-- <path>...]
 frigo restore [--] <path>...
 frigo doctor
 frigo doctor --repair
@@ -258,11 +259,26 @@ A commit requires either one or more paths or `-a`. Running `frigo commit -m "me
 
 ## View history
 
+List commits from frigo's separate history:
+
 ```bash
 frigo log
 ```
 
-This shows commits from frigo's separate history, not commits from the main repository.
+Show the latest commit metadata and complete patch:
+
+```bash
+frigo show
+```
+
+Select another commit using Git revision syntax, optionally filtering the historical patch to exact paths:
+
+```bash
+frigo show HEAD~1
+frigo show HEAD~1 -- PLAN.md
+```
+
+Historical path filters also work for files that were later released from frigo ownership.
 
 ## Doctor and repair
 

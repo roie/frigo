@@ -111,7 +111,7 @@ jobs:
       - name: Run Git 2.23 compatibility tests
         env:
           GOFLAGS: -mod=readonly
-        run: go test ./internal/frigo -run '^TestPrivateAttributesPreserveBytesAndDiff$|^TestCommitRejectsStaleHistoryBase$|^TestConcurrentUnbornCommit$|^TestCommitRejectsHistoryBaseDeletedConcurrently$' -count=1
+        run: go test ./internal/frigo -run '^TestPrivateAttributesPreserveBytesAndDiff$|^TestCommitRejectsStaleHistoryBase$|^TestConcurrentUnbornCommit$|^TestCommitRejectsHistoryBaseDeletedConcurrently$|^TestShowReportsLatestCommitAndFullPatch$' -count=1
 
   release:
     name: Publish
