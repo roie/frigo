@@ -140,38 +140,28 @@ func (w *Workspace) normalizePaths(rawPaths []string, requireExist bool) ([]stri
 	return paths, nil
 }
 
+func (w *Workspace) normalizeHistoricalPaths(rawPaths []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(rawPaths))
+	paths := make([]string, 0, len(rawPaths))
+	for _, raw := range rawPaths {
+		_, relative, err := w.normalizeLexicalPath(raw)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[relative]; ok {
+			continue
+		}
+		seen[relative] = struct{}{}
+		paths = append(paths, relative)
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
 func (w *Workspace) normalizePath(raw string, requireExist bool) (string, error) {
-	if raw == "" || strings.ContainsAny(raw, "\r\n") {
-		return "", fmt.Errorf("invalid path %q", raw)
-	}
-	absolute := raw
-	if !filepath.IsAbs(absolute) {
-		absolute = filepath.Join(w.baseDir, absolute)
-	}
-	absolute, err := filepath.Abs(absolute)
+	absolute, relative, err := w.normalizeLexicalPath(raw)
 	if err != nil {
-		return "", fmt.Errorf("resolve path %q: %w", raw, err)
-	}
-	absolute = filepath.Clean(absolute)
-	if rebased, ok := rebasePath(absolute, w.inputBaseDir, w.baseDir); ok {
-		absolute = rebased
-	}
-	relative, err := filepath.Rel(w.repo.Root, absolute)
-	if err != nil {
-		return "", fmt.Errorf("resolve path %q relative to worktree: %w", raw, err)
-	}
-	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("%s is outside the Git worktree", raw)
-	}
-	if relative == "." {
-		return "", fmt.Errorf("the worktree root cannot be managed as one frigo path")
-	}
-	relative = filepath.ToSlash(relative)
-	if !utf8.ValidString(relative) {
-		return "", fmt.Errorf("%q is not a valid UTF-8 path", raw)
-	}
-	if relative == ".git" || strings.HasPrefix(relative, ".git/") {
-		return "", fmt.Errorf("Git metadata cannot be managed by frigo")
+		return "", err
 	}
 	if err := w.rejectGitMetadataAlias(absolute); err != nil {
 		return "", err
@@ -188,6 +178,42 @@ func (w *Workspace) normalizePath(raw string, requireExist bool) (string, error)
 		}
 	}
 	return relative, nil
+}
+
+func (w *Workspace) normalizeLexicalPath(raw string) (string, string, error) {
+	if raw == "" || strings.ContainsAny(raw, "\r\n") {
+		return "", "", fmt.Errorf("invalid path %q", raw)
+	}
+	absolute := raw
+	if !filepath.IsAbs(absolute) {
+		absolute = filepath.Join(w.baseDir, absolute)
+	}
+	absolute, err := filepath.Abs(absolute)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve path %q: %w", raw, err)
+	}
+	absolute = filepath.Clean(absolute)
+	if rebased, ok := rebasePath(absolute, w.inputBaseDir, w.baseDir); ok {
+		absolute = rebased
+	}
+	relative, err := filepath.Rel(w.repo.Root, absolute)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve path %q relative to worktree: %w", raw, err)
+	}
+	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", "", fmt.Errorf("%s is outside the Git worktree", raw)
+	}
+	if relative == "." {
+		return "", "", fmt.Errorf("the worktree root cannot be managed as one frigo path")
+	}
+	relative = filepath.ToSlash(relative)
+	if !utf8.ValidString(relative) {
+		return "", "", fmt.Errorf("%q is not a valid UTF-8 path", raw)
+	}
+	if relative == ".git" || strings.HasPrefix(relative, ".git/") {
+		return "", "", fmt.Errorf("Git metadata cannot be managed by frigo")
+	}
+	return absolute, relative, nil
 }
 
 func rebasePath(absolute, inputBaseDir, resolvedBaseDir string) (string, bool) {

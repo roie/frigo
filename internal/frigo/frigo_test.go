@@ -94,6 +94,68 @@ func TestAddRejectsExplicitSymlinkPaths(t *testing.T) {
 	}
 }
 
+func TestNormalizeHistoricalPaths(t *testing.T) {
+	ws, root := newBareWorkspace(t)
+
+	paths, err := ws.normalizeHistoricalPaths([]string{"z.md", "./a.md", "z.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(paths, []string{"a.md", "z.md"}) {
+		t.Fatalf("normalizeHistoricalPaths() = %v, want [a.md z.md]", paths)
+	}
+
+	paths, err = ws.normalizeHistoricalPaths([]string{filepath.Join(root, "absolute.md"), "missing.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(paths, []string{"absolute.md", "missing.md"}) {
+		t.Fatalf("absolute normalizeHistoricalPaths() = %v", paths)
+	}
+
+	for _, raw := range []string{
+		root,
+		filepath.Join(root, "..", "outside.md"),
+		filepath.Join(root, ".git", "config"),
+		"bad\npath",
+		string([]byte{0xff}),
+	} {
+		if _, err := ws.normalizeHistoricalPaths([]string{raw}); err == nil {
+			t.Fatalf("normalizeHistoricalPaths(%q) succeeded, want error", raw)
+		}
+	}
+
+	t.Run("preserves current symlink lexically", func(t *testing.T) {
+		testrepo.Write(t, root, "target.txt", "target\n")
+		alias := filepath.Join(root, "alias.txt")
+		if err := os.Symlink("target.txt", alias); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		paths, err := ws.normalizeHistoricalPaths([]string{alias})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(paths, []string{"alias.txt"}) {
+			t.Fatalf("normalizeHistoricalPaths() = %v, want [alias.txt]", paths)
+		}
+	})
+
+	t.Run("rebases symlinked worktree", func(t *testing.T) {
+		alias := filepath.Join(t.TempDir(), "worktree-alias")
+		if err := os.Symlink(root, alias); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		aliased := NewWorkspace(ws.repo, gitpkg.Client{Path: "git"}, alias)
+		paths, err := aliased.normalizeHistoricalPaths([]string{filepath.Join(alias, "PLAN.md")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(paths, []string{"PLAN.md"}) {
+			t.Fatalf("normalizeHistoricalPaths() = %v, want [PLAN.md]", paths)
+		}
+	})
+}
+
 func TestAddInitializesWithoutCommitting(t *testing.T) {
 	ws, root := newBareWorkspace(t)
 	testrepo.Write(t, root, "PLAN.md", "draft\n")
