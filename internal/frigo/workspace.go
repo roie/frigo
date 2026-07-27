@@ -16,6 +16,7 @@ type Workspace struct {
 	repo             repository.Repository
 	git              git.Client
 	baseDir          string
+	inputBaseDir     string
 	lockWait         time.Duration
 	linkedStoreHook  func(string) error
 	lifecycleHook    func(string) error
@@ -26,10 +27,17 @@ func NewWorkspace(repo repository.Repository, client git.Client, baseDir string)
 	if absolute, err := filepath.Abs(baseDir); err == nil {
 		baseDir = absolute
 	}
+	inputBaseDir := filepath.Clean(baseDir)
 	if resolved, err := filepath.EvalSymlinks(baseDir); err == nil {
 		baseDir = resolved
 	}
-	return &Workspace{repo: repo, git: client, baseDir: filepath.Clean(baseDir), lockWait: operationLockWait}
+	return &Workspace{
+		repo:         repo,
+		git:          client,
+		baseDir:      filepath.Clean(baseDir),
+		inputBaseDir: inputBaseDir,
+		lockWait:     operationLockWait,
+	}
 }
 
 const operationLockWait = 10 * time.Second

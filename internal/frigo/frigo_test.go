@@ -40,6 +40,60 @@ func TestAddAcceptsSymlinkedWorktreePath(t *testing.T) {
 	}
 }
 
+func TestAddRejectsExplicitSymlinkPaths(t *testing.T) {
+	tests := []struct {
+		name      string
+		setupPath func(*testing.T, string) string
+		wantError string
+	}{
+		{
+			name: "symlink file",
+			setupPath: func(t *testing.T, root string) string {
+				testrepo.Write(t, root, "target.txt", "private\n")
+				alias := filepath.Join(root, "alias.txt")
+				if err := os.Symlink("target.txt", alias); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+				return alias
+			},
+			wantError: "alias.txt resolves through a symlink; add the target explicitly",
+		},
+		{
+			name: "symlink directory",
+			setupPath: func(t *testing.T, root string) string {
+				testrepo.Write(t, root, "real/PLAN.md", "private\n")
+				alias := filepath.Join(root, "alias-dir")
+				if err := os.Symlink("real", alias); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+				return filepath.Join(alias, "PLAN.md")
+			},
+			wantError: "alias-dir resolves through a symlink; add the target explicitly",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ws, root := newBareWorkspace(t)
+			managedPath := tt.setupPath(t, root)
+
+			_, err := ws.Add(context.Background(), []string{managedPath})
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("Add() error = %v, want %q", err, tt.wantError)
+			}
+			for _, metadataPath := range []string{ws.repo.RegistryPath, ws.repo.HistoryDir} {
+				exists, inspectErr := pathExists(metadataPath)
+				if inspectErr != nil {
+					t.Fatal(inspectErr)
+				}
+				if exists {
+					t.Fatalf("metadata path exists after rejected add: %s", metadataPath)
+				}
+			}
+		})
+	}
+}
+
 func TestAddInitializesWithoutCommitting(t *testing.T) {
 	ws, root := newBareWorkspace(t)
 	testrepo.Write(t, root, "PLAN.md", "draft\n")

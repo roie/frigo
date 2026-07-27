@@ -153,8 +153,8 @@ func (w *Workspace) normalizePath(raw string, requireExist bool) (string, error)
 		return "", fmt.Errorf("resolve path %q: %w", raw, err)
 	}
 	absolute = filepath.Clean(absolute)
-	if resolved, resolveErr := filepath.EvalSymlinks(absolute); resolveErr == nil {
-		absolute = resolved
+	if rebased, ok := rebasePath(absolute, w.inputBaseDir, w.baseDir); ok {
+		absolute = rebased
 	}
 	relative, err := filepath.Rel(w.repo.Root, absolute)
 	if err != nil {
@@ -176,6 +176,9 @@ func (w *Workspace) normalizePath(raw string, requireExist bool) (string, error)
 	if err := w.rejectGitMetadataAlias(absolute); err != nil {
 		return "", err
 	}
+	if err := w.rejectSymlinkComponents(relative); err != nil {
+		return "", err
+	}
 	if requireExist {
 		if _, err := os.Lstat(absolute); err != nil {
 			if os.IsNotExist(err) {
@@ -185,6 +188,37 @@ func (w *Workspace) normalizePath(raw string, requireExist bool) (string, error)
 		}
 	}
 	return relative, nil
+}
+
+func rebasePath(absolute, inputBaseDir, resolvedBaseDir string) (string, bool) {
+	if inputBaseDir == resolvedBaseDir {
+		return absolute, false
+	}
+	relative, err := filepath.Rel(inputBaseDir, absolute)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return absolute, false
+	}
+	return filepath.Join(resolvedBaseDir, relative), true
+}
+
+func (w *Workspace) rejectSymlinkComponents(relative string) error {
+	candidate := w.repo.Root
+	componentRelative := ""
+	for _, component := range strings.Split(filepath.FromSlash(relative), string(filepath.Separator)) {
+		candidate = filepath.Join(candidate, component)
+		componentRelative = filepath.Join(componentRelative, component)
+		info, err := os.Lstat(candidate)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("inspect %s: %w", filepath.ToSlash(componentRelative), err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s resolves through a symlink; add the target explicitly", filepath.ToSlash(componentRelative))
+		}
+	}
+	return nil
 }
 
 func (w *Workspace) rejectGitMetadataAlias(absolute string) error {
