@@ -15,7 +15,7 @@ import (
 	"github.com/roie/frigo/internal/testrepo"
 )
 
-const wantUsage = "Usage: frigo <command> [options]\nCommands: add, release, status, list, diff, commit, log, restore, doctor, help\nRun 'frigo help' for detailed help.\n"
+const wantUsage = "Usage: frigo <command> [options]\nCommands: add, release, status, list, diff, commit, log, show, restore, doctor, help\nRun 'frigo help' for detailed help.\n"
 
 const wantHelp = `frigo keeps local project files without adding them to your main Git history.
 
@@ -29,6 +29,7 @@ Usage:
   frigo commit -a -m <message>
   frigo commit -am <message>
   frigo log
+  frigo show [<revision>] [-- <path>...]
   frigo restore [--] <path>...
   frigo doctor [--repair]
 
@@ -40,6 +41,7 @@ Commands:
   diff     Show owned changes against frigo HEAD.
   commit   Commit selected paths, or every owned change with -a.
   log      Show frigo commit history.
+  show     Show one frigo commit and its patch.
   restore  Restore saved owned paths from frigo HEAD.
   doctor   Diagnose metadata, or apply bounded repairs with --repair.
 
@@ -234,6 +236,46 @@ func TestReservedCommandNameCanBeOwned(t *testing.T) {
 	got = invoke(t, root, "list")
 	if got.stdout != "log\n" {
 		t.Fatalf("list=%q", got.stdout)
+	}
+}
+
+func TestShowParser(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want parsedCommand
+	}{
+		{name: "latest", args: []string{"show"}, want: parsedCommand{name: "show"}},
+		{name: "revision", args: []string{"show", "HEAD~1"}, want: parsedCommand{name: "show", revision: "HEAD~1"}},
+		{name: "latest path", args: []string{"show", "--", "PLAN.md"}, want: parsedCommand{name: "show", paths: []string{"PLAN.md"}}},
+		{name: "revision paths", args: []string{"show", "abc1234", "--", "PLAN.md", "-draft.md"}, want: parsedCommand{name: "show", revision: "abc1234", paths: []string{"PLAN.md", "-draft.md"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, usageErr := parseArgs(tt.args)
+			if usageErr != nil {
+				t.Fatalf("parseArgs() usage error = %v", usageErr)
+			}
+			if got.name != tt.want.name || got.revision != tt.want.revision || !slices.Equal(got.paths, tt.want.paths) {
+				t.Fatalf("parseArgs() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+
+	for _, args := range [][]string{{"show", "HEAD", "PLAN.md"}, {"show", "-n1"}, {"show", ""}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			_, usageErr := parseArgs(args)
+			if usageErr == nil || usageErr.command != "show" {
+				t.Fatalf("parseArgs(%q) usage error = %v, want show usage error", args, usageErr)
+			}
+		})
+	}
+}
+
+func TestShowUsageErrors(t *testing.T) {
+	got := invoke(t, t.TempDir(), "show", "HEAD", "PLAN.md")
+	if got.code != 2 || !strings.Contains(got.stderr, "Usage: frigo show [<revision>] [-- <path>...]") {
+		t.Fatalf("show usage result = %+v", got)
 	}
 }
 

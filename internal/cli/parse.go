@@ -4,15 +4,17 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 )
 
 type parsedCommand struct {
-	name    string
-	paths   []string
-	message string
-	all     bool
-	force   bool
-	repair  bool
+	name     string
+	paths    []string
+	revision string
+	message  string
+	all      bool
+	force    bool
+	repair   bool
 }
 
 type usageError struct {
@@ -30,6 +32,8 @@ func parseArgs(args []string) (parsedCommand, *usageError) {
 		return parseReleaseArgs(args[1:])
 	case "status", "list", "ls", "log":
 		return parseNoArgCommand(command, args[1:])
+	case "show":
+		return parseShowArgs(args[1:])
 	case "doctor":
 		return parseDoctorArgs(args[1:])
 	case "diff":
@@ -56,6 +60,39 @@ func parsePathCommand(command string, args []string, requirePaths bool) (parsedC
 		return parsedCommand{}, usageFor(command, fmt.Sprintf("%s requires at least one path", command))
 	}
 	return parsedCommand{name: command, paths: paths}, nil
+}
+
+func parseShowArgs(args []string) (parsedCommand, *usageError) {
+	separator := len(args)
+	for index, arg := range args {
+		if arg == "--" {
+			separator = index
+			break
+		}
+	}
+
+	revisionArgs := args[:separator]
+	if len(revisionArgs) > 1 {
+		return parsedCommand{}, usageFor("show", "show accepts at most one revision; use -- before paths")
+	}
+	paths := []string(nil)
+	if separator < len(args) {
+		paths = append(paths, args[separator+1:]...)
+	}
+
+	revision := ""
+	if len(revisionArgs) == 1 {
+		revision = revisionArgs[0]
+		switch {
+		case revision == "":
+			return parsedCommand{}, usageFor("show", "show revision cannot be empty")
+		case strings.ContainsAny(revision, "\r\n"):
+			return parsedCommand{}, usageFor("show", "show revision cannot contain a newline")
+		case revision[0] == '-':
+			return parsedCommand{}, usageFor("show", "show revision cannot begin with '-'; use -- before paths")
+		}
+	}
+	return parsedCommand{name: "show", revision: revision, paths: paths}, nil
 }
 
 func parseNoArgCommand(command string, args []string) (parsedCommand, *usageError) {

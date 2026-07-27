@@ -8,7 +8,7 @@ import (
 
 func printUsage(output io.Writer) {
 	fmt.Fprintln(output, `Usage: frigo <command> [options]
-Commands: add, release, status, list, diff, commit, log, restore, doctor, help
+Commands: add, release, status, list, diff, commit, log, show, restore, doctor, help
 Run 'frigo help' for detailed help.`)
 }
 
@@ -25,6 +25,7 @@ Usage:
   frigo commit -a -m <message>
   frigo commit -am <message>
   frigo log
+  frigo show [<revision>] [-- <path>...]
   frigo restore [--] <path>...
   frigo doctor [--repair]
 
@@ -36,6 +37,7 @@ Commands:
   diff     Show owned changes against frigo HEAD.
   commit   Commit selected paths, or every owned change with -a.
   log      Show frigo commit history.
+  show     Show one frigo commit and its patch.
   restore  Restore saved owned paths from frigo HEAD.
   doctor   Diagnose metadata, or apply bounded repairs with --repair.
 
@@ -68,6 +70,8 @@ func printCommandUsage(output io.Writer, command string) {
 		fmt.Fprintln(output, "  frigo commit -am <message>")
 	case "log":
 		fmt.Fprintln(output, "Usage: frigo log")
+	case "show":
+		fmt.Fprintln(output, "Usage: frigo show [<revision>] [-- <path>...]")
 	case "restore":
 		fmt.Fprintln(output, "Usage: frigo restore [--] <path>...")
 	case "doctor":
