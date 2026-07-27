@@ -33,6 +33,13 @@ jobs:
         run: test -z "$(gofmt -l $(git ls-files '*.go'))"
       - if: matrix.os == 'ubuntu-latest'
         run: go vet ./...
+      - name: Test release scripts
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          node --test \
+            scripts/release-assets.test.js \
+            scripts/release-workflow.test.js \
+            scripts/verify-release-assets.test.js
       - run: go test ./...
       - if: matrix.os == 'ubuntu-latest'
         run: bash scripts/package_test.sh

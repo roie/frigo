@@ -203,3 +203,10 @@ test("CI uses least privilege and non-persisted checkout credentials", () => {
 	assert.equal(checkoutCount, 2);
 	assert.equal(nonPersistentCount, checkoutCount);
 });
+
+test("CI runs release safety tests directly", () => {
+	assert.match(
+		ciWorkflow,
+		/node --test \\\n\s+scripts\/release-assets\.test\.js \\\n\s+scripts\/release-workflow\.test\.js \\\n\s+scripts\/verify-release-assets\.test\.js/,
+	);
+});
