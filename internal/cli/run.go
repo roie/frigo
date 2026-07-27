@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"sort"
 
 	"github.com/roie/frigo/internal/frigo"
@@ -16,6 +17,24 @@ import (
 var minimumGitVersion = gitpkg.Version{Major: 2, Minor: 23, Patch: 0}
 
 var version = "dev"
+
+func resolvedVersion() string {
+	moduleVersion := ""
+	if info, ok := debug.ReadBuildInfo(); ok {
+		moduleVersion = info.Main.Version
+	}
+	return selectVersion(version, moduleVersion)
+}
+
+func selectVersion(linkerVersion, moduleVersion string) string {
+	if linkerVersion != "dev" {
+		return linkerVersion
+	}
+	if len(moduleVersion) > 1 && moduleVersion[0] == 'v' && moduleVersion[1] >= '0' && moduleVersion[1] <= '9' {
+		return moduleVersion[1:]
+	}
+	return "dev"
+}
 
 // Run executes the frigo command using the process working directory.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -49,7 +68,7 @@ func runAt(ctx context.Context, args []string, stdin io.Reader, stdout, stderr i
 	}
 	if args[0] == "--version" {
 		if len(args) == 1 {
-			fmt.Fprintf(stdout, "frigo %s\n", version)
+			fmt.Fprintf(stdout, "frigo %s\n", resolvedVersion())
 			return 0
 		}
 		return printUsageError(stderr, &usageError{message: "--version does not accept arguments", general: true})

@@ -87,6 +87,29 @@ func TestVersionDoesNotRequireRepository(t *testing.T) {
 	}
 }
 
+func TestSelectVersion(t *testing.T) {
+	tests := []struct {
+		name          string
+		linkerVersion string
+		moduleVersion string
+		want          string
+	}{
+		{name: "linker release wins", linkerVersion: "0.3.0", moduleVersion: "v0.2.0", want: "0.3.0"},
+		{name: "module release", linkerVersion: "dev", moduleVersion: "v0.2.0", want: "0.2.0"},
+		{name: "module prerelease", linkerVersion: "dev", moduleVersion: "v0.3.0-rc.1", want: "0.3.0-rc.1"},
+		{name: "development build", linkerVersion: "dev", moduleVersion: "(devel)", want: "dev"},
+		{name: "missing build info", linkerVersion: "dev", moduleVersion: "", want: "dev"},
+		{name: "non-module string", linkerVersion: "dev", moduleVersion: "workspace", want: "dev"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := selectVersion(tt.linkerVersion, tt.moduleVersion); got != tt.want {
+				t.Fatalf("selectVersion(%q, %q) = %q, want %q", tt.linkerVersion, tt.moduleVersion, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHelpWithExtraArgsReturnsUsageError(t *testing.T) {
 	for _, args := range [][]string{{"help", "extra"}, {"--help", "extra"}} {
 		got := invoke(t, t.TempDir(), args...)
