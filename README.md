@@ -444,6 +444,16 @@ Automatic file discovery varies by editor and agent. Some tools omit Git-ignored
 
 frigo does not install agent-specific instructions or modify files such as `AGENTS.md`, `CLAUDE.md`, or editor settings.
 
+### Suggested agent instruction
+
+Add this to `AGENTS.md`, `CLAUDE.md`, or your agent's equivalent instruction file:
+
+```text
+Use `frigo` for local project files that should stay out of the main Git
+history. Before committing, check `frigo status` and commit plans, notes,
+research, or AI working files with `frigo`, not `git`.
+```
+
 ## Limitations
 
 frigo is convenience tooling, not a security boundary. Deliberate force-adds, direct index changes, or modified ignore rules can bypass it.
