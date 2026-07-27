@@ -126,29 +126,75 @@ test("requestWithRedirects follows redirects and enforces size", async (t) => {
 	assert.deepEqual(fs.readFileSync(destination), body);
 });
 
-test("requestWithRedirects enforces a wall-clock timeout", async (t) => {
+test("requestWithRedirects shares one timeout across redirects", async (t) => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "frigo-timeout-test-"));
 	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-	const server = http.createServer((_request, response) => {
-		response.writeHead(200, { "content-length": 4 });
-		response.write("a");
-		const interval = setInterval(() => response.write("b"), 20);
-		setTimeout(() => {
-			clearInterval(interval);
-			response.end("c");
-		}, 100);
+	const body = Buffer.from("ok");
+	const server = http.createServer((request, response) => {
+		if (request.url === "/redirect") {
+			setTimeout(() => response.writeHead(302, { location: "/slow" }).end(), 40);
+			return;
+		}
+		setTimeout(
+			() => response.writeHead(200, { "content-length": body.length }).end(body),
+			40,
+		);
 	});
 	const port = await listen(t, server);
 	await assert.rejects(
 		runtime.requestWithRedirects(
-			`http://127.0.0.1:${port}/slow`,
+			`http://127.0.0.1:${port}/redirect`,
 			path.join(root, "asset.gz"),
-			4,
+			body.length,
 			10,
-			50,
+			60,
 		),
-		/timed out after 50ms/,
+		/timed out after 60ms/,
 	);
+});
+
+test("download retries share one deadline", async (t) => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "frigo-retry-deadline-test-"));
+	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+	const server = http.createServer((_request, response) => {
+		response.writeHead(500).end("retry");
+	});
+	const port = await listen(t, server);
+	await assert.rejects(
+		runtime.downloadWithRetries(
+			`http://127.0.0.1:${port}/asset`,
+			path.join(root, "asset.gz"),
+			2,
+			{
+				attemptTimeoutMs: 100,
+				totalTimeoutMs: 60,
+				maxRetries: 3,
+				retryDelayMs: 40,
+			},
+		),
+		/timed out after 60ms/,
+	);
+});
+
+test("old cache lock is preserved on timeout", async (t) => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "frigo-old-lock-test-"));
+	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+	const lockPath = path.join(root, "binary.lock");
+	const owner = "old-owner\n";
+	fs.writeFileSync(lockPath, owner);
+	const oldTime = new Date(Date.now() - 10 * 60 * 1000);
+	fs.utimesSync(lockPath, oldTime, oldTime);
+
+	await assert.rejects(
+		runtime.acquireLock(lockPath, { maxWaitMs: 25, pollMs: 5 }),
+		(error) => {
+			assert.match(error.message, /verify that no Frigo installer is running/);
+			assert.match(error.message, /remove it manually/);
+			assert.match(error.message, new RegExp(lockPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+			return true;
+		},
+	);
+	assert.equal(fs.readFileSync(lockPath, "utf8"), owner);
 });
 
 test("requestWithRedirects honors HTTP_PROXY", async (t) => {

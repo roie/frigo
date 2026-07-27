@@ -17,9 +17,10 @@ const { getProxyForUrl } = require("proxy-from-env");
 const INSTALL_TIMEOUT_MS = 120_000;
 const MAX_REDIRECTS = 10;
 const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 250;
+const DOWNLOAD_TIMEOUT_MS = INSTALL_TIMEOUT_MS * MAX_RETRIES;
 const LOCK_POLL_MS = 200;
-const LOCK_STALE_MS = INSTALL_TIMEOUT_MS * MAX_RETRIES + 60_000;
-const LOCK_MAX_WAIT_MS = LOCK_STALE_MS + 30_000;
+const LOCK_MAX_WAIT_MS = DOWNLOAD_TIMEOUT_MS + 90_000;
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
 
 const TARGETS = {
@@ -161,9 +162,14 @@ function requestWithRedirects(
 	expectedSize,
 	redirectsLeft = MAX_REDIRECTS,
 	timeoutMs = INSTALL_TIMEOUT_MS,
+	deadline = Date.now() + timeoutMs,
 ) {
 	if (redirectsLeft < 0) {
 		return Promise.reject(new Error("Too many redirects while downloading frigo binary"));
+	}
+	const remainingMs = deadline - Date.now();
+	if (remainingMs <= 0) {
+		return Promise.reject(new Error(`Download timed out after ${timeoutMs}ms`));
 	}
 
 	let parsedUrl;
@@ -193,8 +199,14 @@ function requestWithRedirects(
 			if (statusCode >= 300 && statusCode < 400 && response.headers.location) {
 				response.resume();
 				const nextUrl = new URL(response.headers.location, parsedUrl).toString();
-				requestWithRedirects(nextUrl, destinationPath, expectedSize, redirectsLeft - 1, timeoutMs)
-					.then(resolve, reject);
+				requestWithRedirects(
+					nextUrl,
+					destinationPath,
+					expectedSize,
+					redirectsLeft - 1,
+					timeoutMs,
+					deadline,
+				).then(resolve, reject);
 				return;
 			}
 			if (statusCode !== 200) {
@@ -221,23 +233,47 @@ function requestWithRedirects(
 
 		const timeout = setTimeout(() => {
 			request.destroy(new Error(`Download timed out after ${timeoutMs}ms`));
-		}, timeoutMs);
+		}, remainingMs);
 		request.on("close", () => clearTimeout(timeout));
 		request.on("error", reject);
 	});
 }
 
-async function downloadWithRetries(url, destinationPath, expectedSize) {
+async function downloadWithRetries(url, destinationPath, expectedSize, options = {}) {
+	const attemptTimeoutMs = options.attemptTimeoutMs ?? INSTALL_TIMEOUT_MS;
+	const totalTimeoutMs = options.totalTimeoutMs ?? DOWNLOAD_TIMEOUT_MS;
+	const maxRetries = options.maxRetries ?? MAX_RETRIES;
+	const retryDelayMs = options.retryDelayMs ?? RETRY_DELAY_MS;
+	const deadline = Date.now() + totalTimeoutMs;
 	let lastError;
-	for (let attempt = 1; attempt <= MAX_RETRIES; attempt += 1) {
+
+	for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+		const remainingMs = deadline - Date.now();
+		if (remainingMs <= 0) {
+			throw new Error(`Download timed out after ${totalTimeoutMs}ms`);
+		}
 		try {
-			await requestWithRedirects(url, destinationPath, expectedSize);
+			await requestWithRedirects(
+				url,
+				destinationPath,
+				expectedSize,
+				MAX_REDIRECTS,
+				Math.min(attemptTimeoutMs, remainingMs),
+			);
 			return;
 		} catch (error) {
 			lastError = error;
 			await fsp.rm(destinationPath, { force: true });
-			if (attempt < MAX_RETRIES) {
-				await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+			if (Date.now() >= deadline) {
+				throw new Error(`Download timed out after ${totalTimeoutMs}ms`);
+			}
+			if (attempt < maxRetries) {
+				const retryRemainingMs = deadline - Date.now();
+				const delayMs = Math.min(attempt * retryDelayMs, retryRemainingMs);
+				await new Promise((resolve) => setTimeout(resolve, delayMs));
+				if (delayMs === retryRemainingMs || Date.now() >= deadline) {
+					throw new Error(`Download timed out after ${totalTimeoutMs}ms`);
+				}
 			}
 		}
 	}
@@ -271,7 +307,19 @@ async function decompressAndVerify(compressedPath, temporaryBinaryPath, entry) {
 	}
 }
 
-async function acquireLock(lockPath) {
+async function releaseOwnedLock(lockPath, owner) {
+	try {
+		if ((await fsp.readFile(lockPath, "utf8")) === owner) {
+			await fsp.rm(lockPath, { force: true });
+		}
+	} catch {
+		// Lock cleanup is best-effort and must not mask launcher results.
+	}
+}
+
+async function acquireLock(lockPath, options = {}) {
+	const maxWaitMs = options.maxWaitMs ?? LOCK_MAX_WAIT_MS;
+	const pollMs = options.pollMs ?? LOCK_POLL_MS;
 	const startedAt = Date.now();
 	while (true) {
 		const owner = `${process.pid}-${Math.random().toString(16).slice(2)}\n`;
@@ -281,38 +329,22 @@ async function acquireLock(lockPath) {
 			await handle.writeFile(owner);
 			await handle.close();
 			handle = undefined;
-			return async () => {
-				try {
-					if ((await fsp.readFile(lockPath, "utf8")) === owner) {
-						await fsp.rm(lockPath, { force: true });
-					}
-				} catch {
-					// Lock cleanup is best-effort and must not mask launcher results.
-				}
-			};
+			return () => releaseOwnedLock(lockPath, owner);
 		} catch (error) {
 			if (handle) {
 				await handle.close().catch(() => {});
-				await fsp.rm(lockPath, { force: true }).catch(() => {});
+				await releaseOwnedLock(lockPath, owner);
 			}
 			if (error.code !== "EEXIST") throw error;
 		}
 
-		try {
-			const stats = await fsp.stat(lockPath);
-			if (Date.now() - stats.mtimeMs > LOCK_STALE_MS) {
-				await fsp.rm(lockPath, { force: true });
-				continue;
-			}
-		} catch (error) {
-			if (error.code === "ENOENT") continue;
-			throw error;
+		if (Date.now() - startedAt >= maxWaitMs) {
+			throw new Error(
+				`Timed out waiting for frigo binary download lock: ${lockPath}; ` +
+					"verify that no Frigo installer is running, then remove it manually",
+			);
 		}
-
-		if (Date.now() - startedAt > LOCK_MAX_WAIT_MS) {
-			throw new Error(`Timed out waiting for frigo binary download lock: ${lockPath}`);
-		}
-		await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_MS));
+		await new Promise((resolve) => setTimeout(resolve, pollMs));
 	}
 }
 
@@ -395,6 +427,7 @@ module.exports = {
 	TARGETS,
 	acquireLock,
 	defaultCacheRoot,
+	downloadWithRetries,
 	ensureBinary,
 	fileMatches,
 	hashFile,
