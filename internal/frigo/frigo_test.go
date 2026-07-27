@@ -752,6 +752,141 @@ func TestDiffRejectsOutsideAndGitMetadataPaths(t *testing.T) {
 	}
 }
 
+func TestShowReportsLatestCommitAndFullPatch(t *testing.T) {
+	ws, root := newWorkspace(t)
+	ownForTest(t, ws, "NOTES.md", "PLAN.md")
+	testrepo.Write(t, root, "NOTES.md", "notes body\n")
+	testrepo.Write(t, root, "PLAN.md", "plan body\n")
+	saveForTest(t, ws, "save both files")
+
+	output, err := ws.Show(context.Background(), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"save both files", "diff --git a/NOTES.md b/NOTES.md", "diff --git a/PLAN.md b/PLAN.md", "+notes body", "+plan body"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("Show() output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestShowSelectsAbbreviatedCommit(t *testing.T) {
+	ws, root := newWorkspace(t)
+	ownForTest(t, ws, "PLAN.md")
+	testrepo.Write(t, root, "PLAN.md", "first body\n")
+	saveForTest(t, ws, "first snapshot")
+	first, err := ws.resolveHistoryBase(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	testrepo.Write(t, root, "PLAN.md", "second body\n")
+	saveForTest(t, ws, "second snapshot")
+
+	output, err := ws.Show(context.Background(), first.OID[:8], nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "first snapshot") || !strings.Contains(output, "+first body") {
+		t.Fatalf("Show() = %q, want first commit", output)
+	}
+	if strings.Contains(output, "second snapshot") || strings.Contains(output, "second body") {
+		t.Fatalf("Show() = %q, unexpectedly contains second commit", output)
+	}
+}
+
+func TestShowFiltersHistoricalPaths(t *testing.T) {
+	ws, root := newWorkspace(t)
+	ownForTest(t, ws, "NOTES.md", "PLAN.md")
+	testrepo.Write(t, root, "NOTES.md", "notes body\n")
+	testrepo.Write(t, root, "PLAN.md", "plan body\n")
+	saveForTest(t, ws, "save both files")
+
+	output, err := ws.Show(context.Background(), "", []string{"PLAN.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "diff --git a/PLAN.md b/PLAN.md") || !strings.Contains(output, "+plan body") {
+		t.Fatalf("Show() = %q, want PLAN.md patch", output)
+	}
+	if strings.Contains(output, "NOTES.md") || strings.Contains(output, "notes body") {
+		t.Fatalf("Show() = %q, unexpectedly contains NOTES.md", output)
+	}
+}
+
+func TestShowReportsNoSavedHistory(t *testing.T) {
+	ws, _ := newWorkspace(t)
+	output, err := ws.Show(context.Background(), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output != "no saved history" {
+		t.Fatalf("Show() = %q, want no saved history", output)
+	}
+}
+
+func TestShowRejectsInvalidRevision(t *testing.T) {
+	ws, _ := committedWorkspace(t, "PLAN.md", "saved\n")
+	for _, revision := range []string{"missing-commit", "-n1"} {
+		_, err := ws.Show(context.Background(), revision, nil)
+		if err == nil || !strings.Contains(err.Error(), revision) {
+			t.Fatalf("Show(%q) error = %v, want revision in error", revision, err)
+		}
+	}
+}
+
+func TestShowViewsReleasedHistoricalPath(t *testing.T) {
+	ws, _ := committedWorkspace(t, "PLAN.md", "saved body\n")
+	if _, err := ws.Release(context.Background(), []string{"PLAN.md"}, false); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := ws.Show(context.Background(), "", []string{"PLAN.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "diff --git a/PLAN.md b/PLAN.md") || !strings.Contains(output, "+saved body") {
+		t.Fatalf("Show() = %q, want released PLAN.md history", output)
+	}
+}
+
+func TestShowUsesLiteralHistoricalPathspecs(t *testing.T) {
+	ws, root := newWorkspace(t)
+	paths := []string{"space plan.md", "literal[1].md", "star*.md", "question?.md"}
+	ownForTest(t, ws, paths...)
+	for _, path := range paths {
+		testrepo.Write(t, root, path, path+"\n")
+	}
+	saveForTest(t, ws, "save literal names")
+
+	output, err := ws.Show(context.Background(), "", []string{"literal[1].md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "literal[1].md") {
+		t.Fatalf("Show() = %q, want literal path", output)
+	}
+	for _, excluded := range []string{"space plan.md", "star*.md", "question?.md"} {
+		if strings.Contains(output, excluded) {
+			t.Fatalf("Show() = %q, unexpectedly contains %q", output, excluded)
+		}
+	}
+}
+
+func TestShowUsesResolvedCommitAfterExternalRefUpdate(t *testing.T) {
+	ws, root := committedWorkspace(t, "PLAN.md", "base\n")
+	base, winner := createWinnerAndRestoreBase(t, ws, root, "PLAN.md", "winner\n")
+
+	changing := NewWorkspace(ws.repo, externalHeadChangeGitClient(t, ws.repo.HistoryDir, winner, base, "show"), root)
+	output, err := changing.Show(context.Background(), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "save PLAN.md") || strings.Contains(output, "winner snapshot") {
+		t.Fatalf("Show() = %q, want captured base commit", output)
+	}
+	assertHistoryHead(t, ws, winner)
+}
+
 func TestLogReportsSavedHistory(t *testing.T) {
 	ws, root := newWorkspace(t)
 	ownForTest(t, ws, "PLAN.md")
