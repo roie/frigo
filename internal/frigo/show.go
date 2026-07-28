@@ -65,7 +65,7 @@ func (w *Workspace) resolveShowRevision(ctx context.Context, revision string) (s
 		"rev-parse", "--verify", "--quiet", revision+"^{commit}",
 	)
 	if err != nil {
-		if _, ok := git.ExitCode(err); ok {
+		if code, ok := git.ExitCode(err); ok && code == 1 {
 			return "", fmt.Errorf("invalid frigo revision %q", revision)
 		}
 		return "", fmt.Errorf("resolve frigo revision %q: %w", revision, err)

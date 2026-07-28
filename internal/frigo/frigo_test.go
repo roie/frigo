@@ -834,6 +834,20 @@ func TestShowRejectsInvalidRevision(t *testing.T) {
 	}
 }
 
+func TestShowPreservesRevisionResolutionFailure(t *testing.T) {
+	ws, root := committedWorkspace(t, "PLAN.md", "saved\n")
+	failing := NewWorkspace(
+		ws.repo,
+		failingGitClientWithStderr(t, ws.repo.HistoryDir, "rev-parse", "HEAD~0^{commit}", "injected revision failure"),
+		root,
+	)
+
+	_, err := failing.Show(context.Background(), "HEAD~0", nil)
+	if err == nil || !strings.Contains(err.Error(), "resolve frigo revision") || !strings.Contains(err.Error(), "injected revision failure") {
+		t.Fatalf("Show() error = %v, want preserved revision resolution failure", err)
+	}
+}
+
 func TestShowViewsReleasedHistoricalPath(t *testing.T) {
 	ws, _ := committedWorkspace(t, "PLAN.md", "saved body\n")
 	if _, err := ws.Release(context.Background(), []string{"PLAN.md"}, false); err != nil {
