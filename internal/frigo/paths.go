@@ -184,6 +184,9 @@ func (w *Workspace) normalizeLexicalPath(raw string) (string, string, error) {
 	if raw == "" || strings.ContainsAny(raw, "\r\n") {
 		return "", "", fmt.Errorf("invalid path %q", raw)
 	}
+	if !utf8.ValidString(raw) {
+		return "", "", fmt.Errorf("%q is not a valid UTF-8 path", raw)
+	}
 	absolute := raw
 	if !filepath.IsAbs(absolute) {
 		absolute = filepath.Join(w.baseDir, absolute)

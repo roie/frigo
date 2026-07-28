@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -865,24 +866,31 @@ func TestShowViewsReleasedHistoricalPath(t *testing.T) {
 
 func TestShowUsesLiteralHistoricalPathspecs(t *testing.T) {
 	ws, root := newWorkspace(t)
-	paths := []string{"space plan.md", "literal[1].md", "star*.md", "question?.md"}
+	paths := []string{"space plan.md", "literal[1].md", "!exclude.md"}
+	if runtime.GOOS != "windows" {
+		paths = append(paths, "star*.md", "question?.md")
+	}
 	ownForTest(t, ws, paths...)
 	for _, path := range paths {
 		testrepo.Write(t, root, path, path+"\n")
 	}
 	saveForTest(t, ws, "save literal names")
 
-	output, err := ws.Show(context.Background(), "", []string{"literal[1].md"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(output, "literal[1].md") {
-		t.Fatalf("Show() = %q, want literal path", output)
-	}
-	for _, excluded := range []string{"space plan.md", "star*.md", "question?.md"} {
-		if strings.Contains(output, excluded) {
-			t.Fatalf("Show() = %q, unexpectedly contains %q", output, excluded)
-		}
+	for _, selected := range paths[1:] {
+		t.Run(selected, func(t *testing.T) {
+			output, err := ws.Show(context.Background(), "", []string{selected})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(output, selected) {
+				t.Fatalf("Show() = %q, want literal path %q", output, selected)
+			}
+			for _, excluded := range paths {
+				if excluded != selected && strings.Contains(output, excluded) {
+					t.Fatalf("Show() = %q, unexpectedly contains %q", output, excluded)
+				}
+			}
+		})
 	}
 }
 
