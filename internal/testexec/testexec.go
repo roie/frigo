@@ -69,6 +69,13 @@ import (
 )
 
 func main() {
+	if marker := os.Getenv("FRIGO_MARKER_FILE"); marker != "" {
+		if err := os.WriteFile(marker, []byte("invoked\n"), 0o600); err != nil {
+			exitWithError(err)
+		}
+		_, _ = os.Stdout.Write([]byte("token\x00"))
+		return
+	}
 	if matchFailure() {
 		fail("FRIGO_FAIL_STDERR", 42)
 	}

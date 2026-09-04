@@ -57,15 +57,30 @@ func (w *Workspace) withLock(ctx context.Context, operation string, fn func() er
 
 func (w *Workspace) privateOutput(ctx context.Context, client git.Client, args ...string) (string, error) {
 	client = client.WithEnv("GIT_ATTR_NOSYSTEM=1")
-	prefix := []string{
+	return client.Output(ctx, w.repo.Root, append(w.privateArgs(), args...)...)
+}
+
+func (w *Workspace) privateOutputBytes(ctx context.Context, client git.Client, args ...string) ([]byte, error) {
+	client = client.WithEnv("GIT_ATTR_NOSYSTEM=1")
+	return client.OutputBytes(ctx, w.repo.Root, append(w.privateArgs(), args...)...)
+}
+
+func (w *Workspace) privateOutputBytesWithInput(ctx context.Context, client git.Client, input []byte, args ...string) ([]byte, error) {
+	client = client.WithEnv("GIT_ATTR_NOSYSTEM=1")
+	return client.OutputBytesWithInput(ctx, w.repo.Root, input, append(w.privateArgs(), args...)...)
+}
+
+func (w *Workspace) privateArgs() []string {
+	return []string{
 		"--git-dir=" + w.repo.HistoryDir,
 		"--work-tree=" + w.repo.Root,
 		"-c", "core.hooksPath=" + w.repo.HooksDir,
 		"-c", "core.attributesFile=" + w.repo.AttributesPath,
 		"-c", "core.autocrlf=false",
+		// Empty disables the hook on Git 2.23 too; "false" was a hook path.
+		"-c", "core.fsmonitor=",
 		"-c", "commit.gpgSign=false",
 	}
-	return client.Output(ctx, "", append(prefix, args...)...)
 }
 
 const privateAttributes = "* -text !eol !filter -ident !working-tree-encoding !diff\n"

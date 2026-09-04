@@ -23,13 +23,20 @@ Usage:
   frigo add [--] <path>...
   frigo release [--all] [--force] [--] <path>...
   frigo status
+  frigo status --porcelain=v1 -z [--] [<path>...]
   frigo list | frigo ls
+  frigo list -z | frigo ls -z
   frigo diff [--] [<path>...]
+  frigo diff --patch [--] [<path>...]
   frigo commit -m <message> [--] <path>...
   frigo commit -a -m <message>
   frigo commit -am <message>
   frigo log
+  frigo log --porcelain=v1 -z [--max-count=<n>] [--skip=<n>] [<revision>]
   frigo show [<revision>] [-- <path>...]
+  frigo show --name-status -z <revision> [-- <path>...]
+  frigo show --patch <revision> [-- <path>...]
+  frigo show <revision>:<path>
   frigo restore [--] <path>...
   frigo doctor [--repair]
 
@@ -48,6 +55,7 @@ Commands:
 Notes:
   doctor --repair prints a complete repair plan before mutation.
   release --all applies only to the current worktree.
+  Porcelain and -z forms write machine-readable bytes without headings.
 
 Use -- before paths beginning with '-'. frigo has no persistent staging area.
 `
@@ -239,6 +247,130 @@ func TestReservedCommandNameCanBeOwned(t *testing.T) {
 	}
 }
 
+func TestMachineCommandParsers(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want parsedCommand
+	}{
+		{
+			name: "status porcelain",
+			args: []string{"status", "--porcelain=v1", "-z"},
+			want: parsedCommand{name: "status", output: outputPorcelainV1},
+		},
+		{
+			name: "status porcelain paths",
+			args: []string{"status", "--porcelain=v1", "-z", "--", "PLAN.md", "-draft.md"},
+			want: parsedCommand{name: "status", output: outputPorcelainV1, paths: []string{"PLAN.md", "-draft.md"}},
+		},
+		{
+			name: "list NUL",
+			args: []string{"list", "-z"},
+			want: parsedCommand{name: "list", output: outputNUL},
+		},
+		{
+			name: "ls NUL",
+			args: []string{"ls", "-z"},
+			want: parsedCommand{name: "ls", output: outputNUL},
+		},
+		{
+			name: "diff patch",
+			args: []string{"diff", "--patch", "--", "PLAN.md"},
+			want: parsedCommand{name: "diff", output: outputPatch, paths: []string{"PLAN.md"}},
+		},
+		{
+			name: "log porcelain selection",
+			args: []string{"log", "--porcelain=v1", "-z", "--max-count=0", "--skip=2", "HEAD~1"},
+			want: parsedCommand{name: "log", output: outputPorcelainV1, revision: "HEAD~1", maxCount: new(0), skip: new(2)},
+		},
+		{
+			name: "show name status",
+			args: []string{"show", "--name-status", "-z", "HEAD", "--", "PLAN.md"},
+			want: parsedCommand{name: "show", output: outputNameStatus, revision: "HEAD", paths: []string{"PLAN.md"}},
+		},
+		{
+			name: "show patch",
+			args: []string{"show", "--patch", "HEAD~1", "--", "PLAN.md"},
+			want: parsedCommand{name: "show", output: outputPatch, revision: "HEAD~1", paths: []string{"PLAN.md"}},
+		},
+		{
+			name: "show blob",
+			args: []string{"show", "HEAD:PLAN.md"},
+			want: parsedCommand{name: "show", output: outputBlob, revision: "HEAD", blobPath: "PLAN.md"},
+		},
+		{
+			name: "show blob path colon",
+			args: []string{"show", "HEAD:docs/a:b.md"},
+			want: parsedCommand{name: "show", output: outputBlob, revision: "HEAD", blobPath: "docs/a:b.md"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, usageErr := parseArgs(tt.args)
+			if usageErr != nil {
+				t.Fatalf("parseArgs() usage error = %v", usageErr)
+			}
+			if !parsedCommandsEqual(got, tt.want) {
+				t.Fatalf("parseArgs() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMachineCommandParserErrors(t *testing.T) {
+	tests := [][]string{
+		{"status", "--porcelain=v2", "-z"},
+		{"status", "--porcelain=v1"},
+		{"status", "-z"},
+		{"status", "PLAN.md"},
+		{"list", "PLAN.md"},
+		{"list", "--unknown"},
+		{"diff", "--unknown"},
+		{"log", "--porcelain=v1"},
+		{"log", "-z"},
+		{"log", "--max-count=1"},
+		{"log", "--porcelain=v1", "-z", "--max-count=-1"},
+		{"log", "--porcelain=v1", "-z", "--skip=-1"},
+		{"log", "--porcelain=v1", "-z", "--max-count=999999999999999999999999"},
+		{"show", "--name-status", "HEAD"},
+		{"show", "--name-status", "-z"},
+		{"show", "--patch"},
+		{"show", "--patch", "-z", "HEAD"},
+		{"show", "--name-status", "--patch", "-z", "HEAD"},
+		{"show", "HEAD:", "--", "PLAN.md"},
+		{"show", "--patch", "HEAD:PLAN.md"},
+	}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			_, usageErr := parseArgs(args)
+			if usageErr == nil || usageErr.command != args[0] {
+				t.Fatalf("parseArgs(%q) usage error = %v, want %s usage error", args, usageErr, args[0])
+			}
+		})
+	}
+}
+
+func parsedCommandsEqual(got, want parsedCommand) bool {
+	return got.name == want.name &&
+		slices.Equal(got.paths, want.paths) &&
+		got.revision == want.revision &&
+		got.blobPath == want.blobPath &&
+		got.message == want.message &&
+		optionalIntsEqual(got.maxCount, want.maxCount) &&
+		optionalIntsEqual(got.skip, want.skip) &&
+		got.output == want.output &&
+		got.all == want.all &&
+		got.force == want.force &&
+		got.repair == want.repair
+}
+
+func optionalIntsEqual(got, want *int) bool {
+	if got == nil || want == nil {
+		return got == nil && want == nil
+	}
+	return *got == *want
+}
+
 func TestShowParser(t *testing.T) {
 	tests := []struct {
 		name string
@@ -274,7 +406,7 @@ func TestShowParser(t *testing.T) {
 
 func TestShowUsageErrors(t *testing.T) {
 	got := invoke(t, t.TempDir(), "show", "HEAD", "PLAN.md")
-	if got.code != 2 || !strings.Contains(got.stderr, "Usage: frigo show [<revision>] [-- <path>...]") {
+	if got.code != 2 || !strings.Contains(got.stderr, "  frigo show [<revision>] [-- <path>...]") {
 		t.Fatalf("show usage result = %+v", got)
 	}
 }
@@ -519,6 +651,215 @@ func TestReleaseAllCommandReleasesEveryOwnedRoot(t *testing.T) {
 	contents := testrepo.Read(t, root, ".git/info/exclude")
 	if strings.Contains(contents, "/PLAN.md") || strings.Contains(contents, "/NOTES.md") {
 		t.Fatalf("exclude file still contains released paths: %q", contents)
+	}
+}
+
+func TestCLIMachineCurrentState(t *testing.T) {
+	root := testrepo.Init(t)
+	testrepo.Write(t, root, "README.md", "main\n")
+	testrepo.CommitAll(t, root, "initial", "README.md")
+	testrepo.Write(t, root, "z.md", "z\n")
+	testrepo.Write(t, root, "a.md", "a\n")
+
+	if got := invoke(t, root, "add", "z.md", "a.md"); got.code != 0 {
+		t.Fatalf("add: %+v", got)
+	}
+	if got := invoke(t, root, "list", "-z"); got.code != 0 || got.stderr != "" || got.stdout != "a.md\x00z.md\x00" {
+		t.Fatalf("list -z: %+v", got)
+	}
+	if got := invoke(t, root, "ls", "-z"); got.code != 0 || got.stderr != "" || got.stdout != "a.md\x00z.md\x00" {
+		t.Fatalf("ls -z: %+v", got)
+	}
+	if got := invoke(t, root, "status", "--porcelain=v1", "-z"); got.code != 0 || got.stderr != "" || got.stdout != " A a.md\x00 A z.md\x00" {
+		t.Fatalf("status porcelain: %+v", got)
+	}
+	if got := invoke(t, root, "status", "--porcelain=v1", "-z", "--", "z.md"); got.code != 0 || got.stderr != "" || got.stdout != " A z.md\x00" {
+		t.Fatalf("filtered status porcelain: %+v", got)
+	}
+	if got := invoke(t, root, "status", "--porcelain=v1", "-z", "--", "README.md"); got.code != 1 || got.stdout != "" {
+		t.Fatalf("failed status porcelain: %+v", got)
+	}
+
+	if got := invoke(t, root, "commit", "-a", "-m", "save files"); got.code != 0 {
+		t.Fatalf("commit: %+v", got)
+	}
+	if got := invoke(t, root, "diff", "--patch"); got.code != 0 || got.stderr != "" || got.stdout != "" {
+		t.Fatalf("clean diff --patch: %+v", got)
+	}
+	if got := invoke(t, root, "diff"); got.code != 0 || got.stdout != "no changes\n" {
+		t.Fatalf("clean human diff: %+v", got)
+	}
+
+	testrepo.Write(t, root, "a.md", "changed\n")
+	got := invoke(t, root, "diff", "--patch", "--", "a.md")
+	if got.code != 0 || got.stderr != "" || !strings.Contains(got.stdout, "+changed") || !strings.HasSuffix(got.stdout, "\n") {
+		t.Fatalf("changed diff --patch: %+v", got)
+	}
+}
+
+func TestCLILogPorcelain(t *testing.T) {
+	root := testrepo.Init(t)
+	testrepo.Write(t, root, "README.md", "main\n")
+	testrepo.CommitAll(t, root, "initial", "README.md")
+	testrepo.Write(t, root, "PLAN.md", "first\n")
+	if got := invoke(t, root, "add", "PLAN.md"); got.code != 0 {
+		t.Fatalf("add: %+v", got)
+	}
+	if got := invoke(t, root, "commit", "-a", "-m", "first subject"); got.code != 0 {
+		t.Fatalf("first commit: %+v", got)
+	}
+	testrepo.Write(t, root, "PLAN.md", "second\n")
+	if got := invoke(t, root, "commit", "-a", "-m", "second subject"); got.code != 0 {
+		t.Fatalf("second commit: %+v", got)
+	}
+
+	got := invoke(t, root, "log", "--porcelain=v1", "-z")
+	if got.code != 0 || got.stderr != "" {
+		t.Fatalf("porcelain log: %+v", got)
+	}
+	fields := bytes.Split([]byte(got.stdout), []byte{0})
+	if len(fields) != 21 || string(fields[2]) != "second subject" || string(fields[12]) != "first subject" || len(fields[20]) != 0 {
+		t.Fatalf("porcelain log fields = %#v", fields)
+	}
+
+	got = invoke(t, root, "log", "--porcelain=v1", "-z", "--max-count=1", "--skip=1")
+	fields = bytes.Split([]byte(got.stdout), []byte{0})
+	if got.code != 0 || got.stderr != "" || len(fields) != 11 || string(fields[2]) != "first subject" || len(fields[10]) != 0 {
+		t.Fatalf("selected porcelain log: %+v fields=%#v", got, fields)
+	}
+
+	if got := invoke(t, root, "log", "--porcelain=v1", "-z", "HEAD..HEAD"); got.code != 1 || got.stdout != "" {
+		t.Fatalf("range porcelain log: %+v", got)
+	}
+	if got := invoke(t, root, "log"); got.code != 0 || !strings.Contains(got.stdout, "second subject") {
+		t.Fatalf("human log: %+v", got)
+	}
+
+	emptyRoot := testrepo.Init(t)
+	testrepo.Write(t, emptyRoot, "README.md", "main\n")
+	testrepo.CommitAll(t, emptyRoot, "initial", "README.md")
+	testrepo.Write(t, emptyRoot, "PLAN.md", "draft\n")
+	if got := invoke(t, emptyRoot, "add", "PLAN.md"); got.code != 0 {
+		t.Fatalf("empty add: %+v", got)
+	}
+	if got := invoke(t, emptyRoot, "log", "--porcelain=v1", "-z"); got.code != 0 || got.stderr != "" || got.stdout != "" {
+		t.Fatalf("empty porcelain log: %+v", got)
+	}
+}
+
+func TestCLIShowMachineChanges(t *testing.T) {
+	root := testrepo.Init(t)
+	testrepo.Write(t, root, "README.md", "main\n")
+	testrepo.CommitAll(t, root, "initial", "README.md")
+	testrepo.Write(t, root, "docs/a.md", "first\n")
+	testrepo.Write(t, root, "docs/z.md", "rename\n")
+	if got := invoke(t, root, "add", "docs"); got.code != 0 {
+		t.Fatalf("add: %+v", got)
+	}
+	if got := invoke(t, root, "commit", "-a", "-m", "root snapshot"); got.code != 0 {
+		t.Fatalf("root commit: %+v", got)
+	}
+
+	rootLog := invoke(t, root, "log", "--porcelain=v1", "-z", "--max-count=1")
+	rootFields := bytes.Split([]byte(rootLog.stdout), []byte{0})
+	if rootLog.code != 0 || len(rootFields) != 11 {
+		t.Fatalf("root log: %+v fields=%#v", rootLog, rootFields)
+	}
+	rootOID := string(rootFields[0])
+	if got := invoke(t, root, "show", "--name-status", "-z", rootOID); got.code != 0 || got.stderr != "" || got.stdout != "A\x00docs/a.md\x00A\x00docs/z.md\x00" {
+		t.Fatalf("root name-status: %+v", got)
+	}
+
+	testrepo.Write(t, root, "docs/a.md", "second\n")
+	if err := os.Rename(filepath.Join(root, "docs/z.md"), filepath.Join(root, "docs/m.md")); err != nil {
+		t.Fatal(err)
+	}
+	if got := invoke(t, root, "commit", "-a", "-m", "child snapshot"); got.code != 0 {
+		t.Fatalf("child commit: %+v", got)
+	}
+	childLog := invoke(t, root, "log", "--porcelain=v1", "-z", "--max-count=1")
+	childFields := bytes.Split([]byte(childLog.stdout), []byte{0})
+	if childLog.code != 0 || len(childFields) != 11 {
+		t.Fatalf("child log: %+v fields=%#v", childLog, childFields)
+	}
+	childOID := string(childFields[0])
+
+	got := invoke(t, root, "show", "--name-status", "-z", childOID)
+	if got.code != 0 || got.stderr != "" || got.stdout != "M\x00docs/a.md\x00A\x00docs/m.md\x00D\x00docs/z.md\x00" {
+		t.Fatalf("child name-status: %+v", got)
+	}
+	got = invoke(t, root, "show", "--patch", childOID, "--", "docs/a.md")
+	if got.code != 0 || got.stderr != "" || strings.Contains(got.stdout, "child snapshot") ||
+		!strings.Contains(got.stdout, "-first\n+second\n") || !strings.HasSuffix(got.stdout, "\n") {
+		t.Fatalf("child patch: %+v", got)
+	}
+	if got := invoke(t, root, "show", "--patch", childOID, "--", "docs/missing.md"); got.code != 0 || got.stderr != "" || got.stdout != "" {
+		t.Fatalf("unmatched patch: %+v", got)
+	}
+	if got := invoke(t, root, "show", "--name-status", "-z", "HEAD..HEAD"); got.code != 1 || got.stdout != "" {
+		t.Fatalf("range name-status: %+v", got)
+	}
+	if got := invoke(t, root, "show", childOID, "--", "docs/a.md"); got.code != 0 || !strings.Contains(got.stdout, "child snapshot") {
+		t.Fatalf("human show: %+v", got)
+	}
+}
+
+func TestCLIShowBlobPreservesExactBytes(t *testing.T) {
+	root := testrepo.Init(t)
+	testrepo.Write(t, root, "README.md", "main\n")
+	testrepo.CommitAll(t, root, "initial", "README.md")
+	specialPath := "files/name:part.txt"
+	if filepath.Separator == '\\' {
+		specialPath = "files/name part.txt"
+	}
+	contents := map[string][]byte{
+		"files/text.txt":   []byte("without newline"),
+		"files/empty.txt":  {},
+		"files/binary.bin": {0, 0xff, 1, 0},
+		specialPath:        []byte("colon\n"),
+	}
+	for name, content := range contents {
+		filename := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filename, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := invoke(t, root, "add", "files"); got.code != 0 {
+		t.Fatalf("add: %+v", got)
+	}
+	if got := invoke(t, root, "commit", "-a", "-m", "blob snapshot"); got.code != 0 {
+		t.Fatalf("commit: %+v", got)
+	}
+	log := invoke(t, root, "log", "--porcelain=v1", "-z", "--max-count=1")
+	fields := bytes.Split([]byte(log.stdout), []byte{0})
+	if log.code != 0 || len(fields) != 11 {
+		t.Fatalf("log: %+v fields=%#v", log, fields)
+	}
+	oid := string(fields[0])
+
+	for path, want := range contents {
+		got := invoke(t, root, "show", oid+":"+path)
+		if got.code != 0 || got.stderr != "" || got.stdout != string(want) {
+			t.Fatalf("show blob %q: %+v, want %v", path, got, want)
+		}
+	}
+	if got := invoke(t, root, "release", "files"); got.code != 0 {
+		t.Fatalf("release: %+v", got)
+	}
+	if got := invoke(t, root, "show", oid+":"+specialPath); got.code != 0 || got.stderr != "" || got.stdout != "colon\n" {
+		t.Fatalf("released colon blob: %+v", got)
+	}
+	if got := invoke(t, root, "show", oid+":files/missing.txt"); got.code != 1 || got.stdout != "" {
+		t.Fatalf("missing blob: %+v", got)
+	}
+	if got := invoke(t, root, "show", "HEAD:../outside.txt"); got.code != 1 || got.stdout != "" {
+		t.Fatalf("unsafe blob: %+v", got)
+	}
+	if got := invoke(t, root, "show", oid, "--", "files/text.txt"); got.code != 0 || !strings.Contains(got.stdout, "blob snapshot") {
+		t.Fatalf("human show: %+v", got)
 	}
 }
 

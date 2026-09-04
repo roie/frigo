@@ -1,6 +1,7 @@
 package frigo
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -385,6 +386,33 @@ func TestAddRollsBackRegistryAndIgnoreOnVisibilityCheckFailure(t *testing.T) {
 	}
 }
 
+func TestDiffPatchPreservesExactOutput(t *testing.T) {
+	ws, root := committedWorkspace(t, "PLAN.md", "saved\n")
+
+	clean, err := ws.DiffPatch(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(clean) != 0 {
+		t.Fatalf("clean DiffPatch() = %q, want empty", clean)
+	}
+
+	testrepo.Write(t, root, "PLAN.md", "changed\n")
+	patch, err := ws.DiffPatch(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(patch, []byte("+changed")) {
+		t.Fatalf("DiffPatch() = %q", patch)
+	}
+	if !bytes.HasSuffix(patch, []byte("\n")) {
+		t.Fatalf("DiffPatch() does not preserve terminal newline: %q", patch)
+	}
+
+	assertNoPersistentIndex(t, ws)
+	assertNoTemporaryIndexes(t, ws)
+}
+
 func TestDiffShowsNewOwnedFileWithoutPersistentIndex(t *testing.T) {
 	ws, root := newWorkspace(t)
 	ownForTest(t, ws, "PLAN.md")
@@ -690,6 +718,50 @@ func TestHasHeadReturnsErrorOnBrokenHistory(t *testing.T) {
 	}
 }
 
+func TestStatusPorcelainEmitsSortedNULRecords(t *testing.T) {
+	ws, root := workspaceWithOwnership(t, "docs/local")
+	testrepo.Write(t, root, "docs/local/z.md", "saved z\n")
+	testrepo.Write(t, root, "docs/local/a.md", "saved a\n")
+	saveForTest(t, ws, "save docs")
+
+	testrepo.Write(t, root, "docs/local/a.md", "changed a\n")
+	if err := os.Remove(filepath.Join(root, "docs/local/z.md")); err != nil {
+		t.Fatal(err)
+	}
+	testrepo.Write(t, root, "docs/local/new.md", "new\n")
+
+	got, err := ws.StatusPorcelain(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte(" M docs/local/a.md\x00 A docs/local/new.md\x00 D docs/local/z.md\x00")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("StatusPorcelain() = %q, want %q", got, want)
+	}
+
+	filtered, err := ws.StatusPorcelain(context.Background(), []string{"docs/local/new.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []byte(" A docs/local/new.md\x00"); !bytes.Equal(filtered, want) {
+		t.Fatalf("filtered StatusPorcelain() = %q, want %q", filtered, want)
+	}
+
+	assertNoPersistentIndex(t, ws)
+	assertNoTemporaryIndexes(t, ws)
+}
+
+func TestStatusPorcelainCleanIsEmpty(t *testing.T) {
+	ws, _ := committedWorkspace(t, "PLAN.md", "saved\n")
+	got, err := ws.StatusPorcelain(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("StatusPorcelain() = %q, want empty", got)
+	}
+}
+
 func TestStatusScopesToOwnedPaths(t *testing.T) {
 	ws, root := newWorkspace(t)
 	ownForTest(t, ws, "docs/local")
@@ -750,6 +822,223 @@ func TestDiffRejectsOutsideAndGitMetadataPaths(t *testing.T) {
 	}
 	if _, err := ws.Diff(context.Background(), []string{".git"}); err == nil || !strings.Contains(err.Error(), "Git metadata") {
 		t.Fatalf(".git Diff() error = %v", err)
+	}
+}
+
+func TestShowNameStatusReturnsSortedHistoricalChanges(t *testing.T) {
+	ws, root := workspaceWithOwnership(t, "docs")
+	testrepo.Write(t, root, "docs/z.md", "rename body\n")
+	testrepo.Write(t, root, "docs/a.md", "first\n")
+	testrepo.Write(t, root, "docs/literal[1].md", "literal\n")
+	saveForTest(t, ws, "root snapshot")
+	rootCommit, err := ws.resolveHistoryBase(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rootChanges, err := ws.ShowNameStatus(context.Background(), rootCommit.OID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRoot := "A\x00docs/a.md\x00A\x00docs/literal[1].md\x00A\x00docs/z.md\x00"
+	if string(rootChanges) != wantRoot {
+		t.Fatalf("root ShowNameStatus() = %q, want %q", rootChanges, wantRoot)
+	}
+
+	testrepo.Write(t, root, "docs/a.md", "second\n")
+	testrepo.Write(t, root, "docs/literal[1].md", "changed literal\n")
+	if err := os.Rename(filepath.Join(root, "docs/z.md"), filepath.Join(root, "docs/m.md")); err != nil {
+		t.Fatal(err)
+	}
+	saveForTest(t, ws, "child snapshot")
+	child, err := ws.resolveHistoryBase(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	changes, err := ws.ShowNameStatus(context.Background(), child.OID[:8], nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "M\x00docs/a.md\x00M\x00docs/literal[1].md\x00A\x00docs/m.md\x00D\x00docs/z.md\x00"
+	if string(changes) != want {
+		t.Fatalf("child ShowNameStatus() = %q, want %q", changes, want)
+	}
+	literal, err := ws.ShowNameStatus(context.Background(), child.OID, []string{"docs/literal[1].md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(literal) != "M\x00docs/literal[1].md\x00" {
+		t.Fatalf("literal ShowNameStatus() = %q", literal)
+	}
+	modified, err := ws.ShowNameStatus(context.Background(), child.OID, []string{"docs/a.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(modified) != "M\x00docs/a.md\x00" {
+		t.Fatalf("filtered ShowNameStatus() = %q", modified)
+	}
+
+	if _, err := ws.Release(context.Background(), []string{"docs"}, false); err != nil {
+		t.Fatal(err)
+	}
+	released, err := ws.ShowNameStatus(context.Background(), child.OID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(released, changes) {
+		t.Fatalf("released ShowNameStatus() = %q, want %q", released, changes)
+	}
+}
+
+func TestShowNameStatusRejectsInvalidRevisionWithNilOutput(t *testing.T) {
+	ws, _ := committedWorkspace(t, "PLAN.md", "saved\n")
+	tree, err := ws.privateOutput(context.Background(), ws.git, "rev-parse", "HEAD^{tree}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, revision := range []string{"missing", "HEAD..HEAD", tree} {
+		output, err := ws.ShowNameStatus(context.Background(), revision, nil)
+		if err == nil || output != nil {
+			t.Fatalf("ShowNameStatus(%q) = %q, %v; want nil, error", revision, output, err)
+		}
+	}
+}
+
+func TestShowPatchReturnsOnlyExactPatchBytes(t *testing.T) {
+	ws, root := workspaceWithOwnership(t, "docs")
+	testrepo.Write(t, root, "docs/PLAN.md", "first\n")
+	saveForTest(t, ws, "root snapshot")
+	rootCommit, err := ws.resolveHistoryBase(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootPatch, err := ws.ShowPatch(context.Background(), rootCommit.OID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(rootPatch, []byte("diff --git a/docs/PLAN.md b/docs/PLAN.md\n")) ||
+		!bytes.Contains(rootPatch, []byte("+first\n")) || !bytes.HasSuffix(rootPatch, []byte("\n")) {
+		t.Fatalf("root ShowPatch() = %q", rootPatch)
+	}
+
+	testrepo.Write(t, root, "docs/PLAN.md", "second\n")
+	saveForTest(t, ws, "child snapshot")
+	child, err := ws.resolveHistoryBase(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.privateOutput(context.Background(), ws.git, "config", "color.ui", "always"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.privateOutput(context.Background(), ws.git, "config", "diff.external", "missing-frigo-external-diff"); err != nil {
+		t.Fatal(err)
+	}
+	patch, err := ws.ShowPatch(context.Background(), child.OID, []string{"docs/PLAN.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(patch, []byte("\x1b[")) || bytes.Contains(patch, []byte("child snapshot")) ||
+		!bytes.Contains(patch, []byte("-first\n+second\n")) || !bytes.HasSuffix(patch, []byte("\n")) {
+		t.Fatalf("child ShowPatch() = %q", patch)
+	}
+	empty, err := ws.ShowPatch(context.Background(), child.OID, []string{"docs/missing.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("unmatched ShowPatch() = %q, want empty", empty)
+	}
+}
+
+func TestShowPatchPreservesBinaryRepresentation(t *testing.T) {
+	ws, root := workspaceWithOwnership(t, "data.bin")
+	if err := os.WriteFile(filepath.Join(root, "data.bin"), []byte{0, 1, 2, 3}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	saveForTest(t, ws, "binary snapshot")
+	commit, err := ws.resolveHistoryBase(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch, err := ws.ShowPatch(context.Background(), commit.OID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(patch, []byte("Binary files /dev/null and b/data.bin differ\n")) || !bytes.HasSuffix(patch, []byte("\n")) {
+		t.Fatalf("binary ShowPatch() = %q", patch)
+	}
+}
+
+func TestShowBlobPreservesExactHistoricalBytes(t *testing.T) {
+	ws, root := workspaceWithOwnership(t, "files")
+	contents := map[string][]byte{
+		"files/empty.txt":             {},
+		"files/newline.txt":           []byte("line\n"),
+		"files/no-newline.txt":        []byte("line"),
+		"files/multiple-newlines.txt": []byte("line\n\n\n"),
+		"files/binary.bin":            {0, 0xff, 1, '\n', 0},
+		"files/space [x].txt":         []byte("special path\n"),
+	}
+	if runtime.GOOS != "windows" {
+		contents["files/space [x]:part.txt"] = []byte("colon path\n")
+	}
+	for name, content := range contents {
+		filename := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filename, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	saveForTest(t, ws, "blob snapshot")
+	commit, err := ws.resolveHistoryBase(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for path, want := range contents {
+		got, err := ws.ShowBlob(context.Background(), commit.OID[:8], path)
+		if err != nil {
+			t.Fatalf("ShowBlob(%q): %v", path, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("ShowBlob(%q) = %v, want %v", path, got, want)
+		}
+	}
+
+	if _, err := ws.Release(context.Background(), []string{"files"}, false); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ws.ShowBlob(context.Background(), commit.OID, "files/newline.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, contents["files/newline.txt"]) {
+		t.Fatalf("released ShowBlob() = %q", got)
+	}
+}
+
+func TestShowBlobRejectsMissingNonBlobAndUnsafeSelections(t *testing.T) {
+	ws, _ := committedWorkspace(t, "docs/PLAN.md", "saved\n")
+	for _, selection := range []struct {
+		revision string
+		path     string
+	}{
+		{revision: "missing", path: "docs/PLAN.md"},
+		{revision: "HEAD..HEAD", path: "docs/PLAN.md"},
+		{revision: "HEAD", path: "docs/missing.md"},
+		{revision: "HEAD", path: "docs"},
+		{revision: "HEAD", path: "../outside.md"},
+		{revision: "HEAD", path: ".git/config"},
+		{revision: "HEAD", path: "bad\npath"},
+		{revision: "HEAD", path: string([]byte{0xff})},
+	} {
+		output, err := ws.ShowBlob(context.Background(), selection.revision, selection.path)
+		if err == nil || output != nil {
+			t.Fatalf("ShowBlob(%q, %q) = %q, %v; want nil, error", selection.revision, selection.path, output, err)
+		}
 	}
 }
 
@@ -907,6 +1196,179 @@ func TestShowUsesResolvedCommitAfterExternalRefUpdate(t *testing.T) {
 		t.Fatalf("Show() = %q, want captured base commit", output)
 	}
 	assertHistoryHead(t, ws, winner)
+}
+
+func TestResolveCommitRequiresOneCommit(t *testing.T) {
+	ws, root := committedWorkspace(t, "PLAN.md", "first\n")
+	first, err := ws.resolveHistoryBase(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	testrepo.Write(t, root, "PLAN.md", "second\n")
+	saveForTest(t, ws, "second")
+
+	for _, revision := range []string{"HEAD", "HEAD~1", first.OID[:8]} {
+		oid, err := ws.resolveCommit(context.Background(), revision)
+		if err != nil {
+			t.Fatalf("resolveCommit(%q): %v", revision, err)
+		}
+		if len(oid) != len(first.OID) || strings.ContainsAny(oid, "\r\n") {
+			t.Fatalf("resolveCommit(%q) = %q, want one full OID", revision, oid)
+		}
+	}
+
+	tree, err := ws.privateOutput(context.Background(), ws.git, "rev-parse", "HEAD^{tree}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, revision := range []string{"", "-n1", "missing", tree, "HEAD..HEAD", "HEAD...HEAD", "HEAD^@", "HEAD^!", "HEAD\n"} {
+		if _, err := ws.resolveCommit(context.Background(), revision); err == nil {
+			t.Fatalf("resolveCommit(%q) error = nil, want rejection", revision)
+		}
+	}
+}
+
+func TestLogPorcelainEmitsFixedCommitRecords(t *testing.T) {
+	ws, root := workspaceWithOwnership(t, "PLAN.md")
+	testrepo.Run(t, root, "config", "user.name", "Record User")
+	testrepo.Run(t, root, "config", "user.email", "record@example.invalid")
+	ws.git = ws.git.WithEnv(
+		"GIT_AUTHOR_DATE=2024-01-02T03:04:05+05:30",
+		"GIT_COMMITTER_DATE=2024-01-02T04:05:06+05:30",
+	)
+	testrepo.Write(t, root, "PLAN.md", "first\n")
+	saveForTest(t, ws, "first subject")
+	first, err := ws.resolveHistoryBase(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ws.git = ws.git.WithEnv(
+		"GIT_AUTHOR_DATE=2024-02-03T04:05:06-07:00",
+		"GIT_COMMITTER_DATE=2024-02-03T05:06:07-07:00",
+	)
+	testrepo.Write(t, root, "PLAN.md", "second\n")
+	saveForTest(t, ws, "second subject\n\nsecond body\nline")
+	second, err := ws.resolveHistoryBase(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := ws.LogPorcelain(context.Background(), LogOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := parseCommitRecords(t, output)
+	if len(records) != 2 {
+		t.Fatalf("LogPorcelain() records = %d, want 2", len(records))
+	}
+	wantSecond := []string{
+		second.OID,
+		first.OID,
+		"second subject",
+		"second body\nline\n",
+		"Record User",
+		"record@example.invalid",
+		"2024-02-03T04:05:06-07:00",
+		"Record User",
+		"record@example.invalid",
+		"2024-02-03T05:06:07-07:00",
+	}
+	if !slices.Equal(records[0], wantSecond) {
+		t.Fatalf("newest record = %#v, want %#v", records[0], wantSecond)
+	}
+	if records[1][0] != first.OID || records[1][1] != "" || records[1][2] != "first subject" {
+		t.Fatalf("root record = %#v", records[1])
+	}
+
+	zero := 0
+	if got, err := ws.LogPorcelain(context.Background(), LogOptions{MaxCount: &zero}); err != nil || len(got) != 0 {
+		t.Fatalf("LogPorcelain(max-count=0) = %q, %v", got, err)
+	}
+	one := 1
+	skip := 1
+	got, err := ws.LogPorcelain(context.Background(), LogOptions{MaxCount: &one, Skip: &skip})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if records := parseCommitRecords(t, got); len(records) != 1 || records[0][0] != first.OID {
+		t.Fatalf("LogPorcelain(skip=1) = %#v", records)
+	}
+	got, err = ws.LogPorcelain(context.Background(), LogOptions{Revision: first.OID[:8], MaxCount: &one})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if records := parseCommitRecords(t, got); len(records) != 1 || records[0][0] != first.OID {
+		t.Fatalf("LogPorcelain(first) = %#v", records)
+	}
+}
+
+func TestLogPorcelainEmptyHistoryIsEmpty(t *testing.T) {
+	ws, _ := newWorkspace(t)
+	got, err := ws.LogPorcelain(context.Background(), LogOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("LogPorcelain() = %q, want empty", got)
+	}
+}
+
+func TestLogPorcelainRejectsNULInRawCommit(t *testing.T) {
+	ws, _ := committedWorkspace(t, "PLAN.md", "saved\n")
+	tree, err := ws.privateOutput(context.Background(), ws.git, "rev-parse", "HEAD^{tree}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := fmt.Appendf(
+		nil,
+		"tree %s\nauthor Test <test@example.invalid> 1700000000 +0000\ncommitter Test <test@example.invalid> 1700000000 +0000\n\nsubject",
+		tree,
+	)
+	raw = append(raw, 0)
+	raw = append(raw, "hidden body\n"...)
+	oidBytes, err := ws.privateOutputBytesWithInput(context.Background(), ws.git, raw, "hash-object", "--literally", "-t", "commit", "-w", "--stdin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oid := strings.TrimSpace(string(oidBytes))
+
+	formatted, err := ws.privateOutputBytes(context.Background(), ws.git, "log", "-1", "-z", "--format=%s%x00%b", oid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(formatted, []byte("hidden body")) {
+		t.Fatalf("Git formatter unexpectedly retained NUL suffix: %q", formatted)
+	}
+
+	one := 1
+	if output, err := ws.LogPorcelain(context.Background(), LogOptions{Revision: oid, MaxCount: &one}); err == nil || output != nil {
+		t.Fatalf("LogPorcelain(malformed) = %q, %v; want nil, error", output, err)
+	}
+}
+
+func parseCommitRecords(t *testing.T, output []byte) [][]string {
+	t.Helper()
+	if len(output) == 0 {
+		return nil
+	}
+	if output[len(output)-1] != 0 {
+		t.Fatalf("commit records are not NUL terminated: %q", output)
+	}
+	fields := bytes.Split(output[:len(output)-1], []byte{0})
+	if len(fields)%10 != 0 {
+		t.Fatalf("commit record field count = %d, want multiple of 10", len(fields))
+	}
+	records := make([][]string, 0, len(fields)/10)
+	for len(fields) > 0 {
+		record := make([]string, 10)
+		for index := range record {
+			record[index] = string(fields[index])
+		}
+		records = append(records, record)
+		fields = fields[10:]
+	}
+	return records
 }
 
 func TestLogReportsSavedHistory(t *testing.T) {

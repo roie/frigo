@@ -196,7 +196,7 @@ func (w *Workspace) rejectMainTracked(ctx context.Context, paths []string) error
 	if len(paths) == 0 {
 		return nil
 	}
-	args := append([]string{"-C", w.repo.Root, "ls-files", "--"}, paths...)
+	args := append([]string{"-C", w.repo.Root, "-c", "core.fsmonitor=", "ls-files", "--"}, paths...)
 	output, err := w.git.Output(ctx, "", args...)
 	if err != nil {
 		return fmt.Errorf("inspect main Git index: %w", err)
@@ -211,7 +211,7 @@ func (w *Workspace) rejectMainVisible(ctx context.Context, paths []string) error
 	if len(paths) == 0 {
 		return nil
 	}
-	args := append([]string{"-C", w.repo.Root, "ls-files", "--others", "--exclude-standard", "--"}, paths...)
+	args := append([]string{"-C", w.repo.Root, "-c", "core.fsmonitor=", "ls-files", "--others", "--exclude-standard", "--"}, paths...)
 	output, err := w.git.Output(ctx, "", args...)
 	if err != nil {
 		return fmt.Errorf("inspect main Git exclusions: %w", err)
@@ -241,7 +241,7 @@ func (w *Workspace) rejectMainVisible(ctx context.Context, paths []string) error
 		if hasContent {
 			continue
 		}
-		ignored, err := w.git.Output(ctx, "", "-C", w.repo.Root, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "--", candidate)
+		ignored, err := w.git.Output(ctx, "", "-C", w.repo.Root, "-c", "core.fsmonitor=", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "--", candidate)
 		if err != nil {
 			return fmt.Errorf("inspect main Git exclusions: %w", err)
 		}

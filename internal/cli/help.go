@@ -19,13 +19,20 @@ Usage:
   frigo add [--] <path>...
   frigo release [--all] [--force] [--] <path>...
   frigo status
+  frigo status --porcelain=v1 -z [--] [<path>...]
   frigo list | frigo ls
+  frigo list -z | frigo ls -z
   frigo diff [--] [<path>...]
+  frigo diff --patch [--] [<path>...]
   frigo commit -m <message> [--] <path>...
   frigo commit -a -m <message>
   frigo commit -am <message>
   frigo log
+  frigo log --porcelain=v1 -z [--max-count=<n>] [--skip=<n>] [<revision>]
   frigo show [<revision>] [-- <path>...]
+  frigo show --name-status -z <revision> [-- <path>...]
+  frigo show --patch <revision> [-- <path>...]
+  frigo show <revision>:<path>
   frigo restore [--] <path>...
   frigo doctor [--repair]
 
@@ -44,6 +51,7 @@ Commands:
 Notes:
   doctor --repair prints a complete repair plan before mutation.
   release --all applies only to the current worktree.
+  Porcelain and -z forms write machine-readable bytes without headings.
 
 Use -- before paths beginning with '-'. frigo has no persistent staging area.`)
 }
@@ -56,22 +64,32 @@ func printCommandUsage(output io.Writer, command string) {
 		fmt.Fprintln(output, "Usage: frigo release [--all] [--force] [--] <path>...")
 		fmt.Fprintln(output, "release --all applies only to the current worktree.")
 	case "status":
-		fmt.Fprintln(output, "Usage: frigo status")
+		fmt.Fprintln(output, "Usage:")
+		fmt.Fprintln(output, "  frigo status")
+		fmt.Fprintln(output, "  frigo status --porcelain=v1 -z [--] [<path>...]")
 	case "list":
-		fmt.Fprintln(output, "Usage: frigo list")
+		fmt.Fprintln(output, "Usage: frigo list [-z]")
 	case "ls":
-		fmt.Fprintln(output, "Usage: frigo ls")
+		fmt.Fprintln(output, "Usage: frigo ls [-z]")
 	case "diff":
-		fmt.Fprintln(output, "Usage: frigo diff [--] [<path>...]")
+		fmt.Fprintln(output, "Usage:")
+		fmt.Fprintln(output, "  frigo diff [--] [<path>...]")
+		fmt.Fprintln(output, "  frigo diff --patch [--] [<path>...]")
 	case "commit":
 		fmt.Fprintln(output, "Usage:")
 		fmt.Fprintln(output, "  frigo commit -m <message> [--] <path>...")
 		fmt.Fprintln(output, "  frigo commit -a -m <message>")
 		fmt.Fprintln(output, "  frigo commit -am <message>")
 	case "log":
-		fmt.Fprintln(output, "Usage: frigo log")
+		fmt.Fprintln(output, "Usage:")
+		fmt.Fprintln(output, "  frigo log")
+		fmt.Fprintln(output, "  frigo log --porcelain=v1 -z [--max-count=<n>] [--skip=<n>] [<revision>]")
 	case "show":
-		fmt.Fprintln(output, "Usage: frigo show [<revision>] [-- <path>...]")
+		fmt.Fprintln(output, "Usage:")
+		fmt.Fprintln(output, "  frigo show [<revision>] [-- <path>...]")
+		fmt.Fprintln(output, "  frigo show --name-status -z <revision> [-- <path>...]")
+		fmt.Fprintln(output, "  frigo show --patch <revision> [-- <path>...]")
+		fmt.Fprintln(output, "  frigo show <revision>:<path>")
 	case "restore":
 		fmt.Fprintln(output, "Usage: frigo restore [--] <path>...")
 	case "doctor":

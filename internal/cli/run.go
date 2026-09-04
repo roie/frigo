@@ -125,6 +125,13 @@ func runAt(ctx context.Context, args []string, stdin io.Reader, stdout, stderr i
 			fmt.Fprintf(stdout, "released %s\n", path)
 		}
 	case "status":
+		if parsed.output == outputPorcelainV1 {
+			output, err := workspace.StatusPorcelain(ctx, parsed.paths)
+			if err != nil {
+				return printError(stderr, err)
+			}
+			return writeMachineOutput(stdout, stderr, output)
+		}
 		status, err := workspace.StatusSnapshot(ctx)
 		if err != nil {
 			return printError(stderr, err)
@@ -138,10 +145,26 @@ func runAt(ctx context.Context, args []string, stdin io.Reader, stdout, stderr i
 		if err != nil {
 			return printError(stderr, err)
 		}
+		if parsed.output == outputNUL {
+			sort.Strings(paths)
+			output := make([]byte, 0)
+			for _, path := range paths {
+				output = append(output, path...)
+				output = append(output, 0)
+			}
+			return writeMachineOutput(stdout, stderr, output)
+		}
 		for _, path := range paths {
 			fmt.Fprintln(stdout, path)
 		}
 	case "diff":
+		if parsed.output == outputPatch {
+			output, err := workspace.DiffPatch(ctx, parsed.paths)
+			if err != nil {
+				return printError(stderr, err)
+			}
+			return writeMachineOutput(stdout, stderr, output)
+		}
 		output, err := workspace.Diff(ctx, parsed.paths)
 		if err != nil {
 			return printError(stderr, err)
@@ -166,12 +189,43 @@ func runAt(ctx context.Context, args []string, stdin io.Reader, stdout, stderr i
 			fmt.Fprintf(stdout, "committed %s\n", result.Commit)
 		}
 	case "log":
+		if parsed.output == outputPorcelainV1 {
+			output, err := workspace.LogPorcelain(ctx, frigo.LogOptions{
+				Revision: parsed.revision,
+				MaxCount: parsed.maxCount,
+				Skip:     parsed.skip,
+			})
+			if err != nil {
+				return printError(stderr, err)
+			}
+			return writeMachineOutput(stdout, stderr, output)
+		}
 		output, err := workspace.Log(ctx)
 		if err != nil {
 			return printError(stderr, err)
 		}
 		fmt.Fprintln(stdout, output)
 	case "show":
+		switch parsed.output {
+		case outputNameStatus:
+			output, err := workspace.ShowNameStatus(ctx, parsed.revision, parsed.paths)
+			if err != nil {
+				return printError(stderr, err)
+			}
+			return writeMachineOutput(stdout, stderr, output)
+		case outputPatch:
+			output, err := workspace.ShowPatch(ctx, parsed.revision, parsed.paths)
+			if err != nil {
+				return printError(stderr, err)
+			}
+			return writeMachineOutput(stdout, stderr, output)
+		case outputBlob:
+			output, err := workspace.ShowBlob(ctx, parsed.revision, parsed.blobPath)
+			if err != nil {
+				return printError(stderr, err)
+			}
+			return writeMachineOutput(stdout, stderr, output)
+		}
 		output, err := workspace.Show(ctx, parsed.revision, parsed.paths)
 		if err != nil {
 			return printError(stderr, err)
@@ -226,4 +280,18 @@ func printUsageError(stderr io.Writer, err *usageError) int {
 func printError(stderr io.Writer, err error) int {
 	fmt.Fprintf(stderr, "frigo: %v\n", err)
 	return 1
+}
+
+func writeMachineOutput(stdout, stderr io.Writer, output []byte) int {
+	if len(output) == 0 {
+		return 0
+	}
+	written, err := stdout.Write(output)
+	if err != nil {
+		return printError(stderr, fmt.Errorf("write machine output: %w", err))
+	}
+	if written != len(output) {
+		return printError(stderr, fmt.Errorf("write machine output: %w", io.ErrShortWrite))
+	}
+	return 0
 }

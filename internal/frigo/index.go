@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/roie/frigo/internal/git"
 )
@@ -78,12 +79,54 @@ func (w *Workspace) comparisonOID(ctx context.Context, base historyBase) (string
 	return oid, nil
 }
 
+func (w *Workspace) historicalComparisonOID(ctx context.Context, commitOID string) (string, error) {
+	client := w.git.WithEnv("GIT_ATTR_NOSYSTEM=1", "GIT_NO_REPLACE_OBJECTS=1")
+	output, err := w.privateOutput(ctx, client, "rev-list", "--parents", "--max-count=1", commitOID, "--")
+	if err != nil {
+		return "", fmt.Errorf("read parents for frigo commit %s: %w", commitOID, err)
+	}
+	fields := strings.Fields(output)
+	if len(fields) == 0 || fields[0] != commitOID {
+		return "", fmt.Errorf("invalid parent record for frigo commit %s", commitOID)
+	}
+	if len(fields) > 1 {
+		return fields[1], nil
+	}
+	return w.comparisonOID(ctx, historyBase{})
+}
+
 // statusAtOID preserves Git's porcelain formatting while replacing the private
 // repository's symbolic HEAD with a temporary detached HEAD at oid.
-func (w *Workspace) statusAtOID(ctx context.Context, client git.Client, oid string, args ...string) (output string, returnErr error) {
+func (w *Workspace) statusAtOID(ctx context.Context, client git.Client, oid string, args ...string) (string, error) {
+	var output string
+	err := w.withPinnedStatus(oid, func(commandArgs []string) error {
+		var err error
+		output, err = client.Output(ctx, w.repo.Root, append(commandArgs, args...)...)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	return output, nil
+}
+
+func (w *Workspace) statusAtOIDBytes(ctx context.Context, client git.Client, oid string, args ...string) ([]byte, error) {
+	var output []byte
+	err := w.withPinnedStatus(oid, func(commandArgs []string) error {
+		var err error
+		output, err = client.OutputBytes(ctx, w.repo.Root, append(commandArgs, args...)...)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return output, nil
+}
+
+func (w *Workspace) withPinnedStatus(oid string, run func(commandArgs []string) error) (returnErr error) {
 	gitDir, err := os.MkdirTemp(w.repo.FrigoDir, "temporary-git-dir-*")
 	if err != nil {
-		return "", fmt.Errorf("allocate pinned frigo status directory: %w", err)
+		return fmt.Errorf("allocate pinned frigo status directory: %w", err)
 	}
 	defer func() {
 		if err := os.RemoveAll(gitDir); err != nil {
@@ -96,12 +139,10 @@ func (w *Workspace) statusAtOID(ctx context.Context, client git.Client, oid stri
 		"HEAD":      oid + "\n",
 	} {
 		if err := os.WriteFile(filepath.Join(gitDir, filename), []byte(contents), 0o600); err != nil {
-			return "", fmt.Errorf("write pinned frigo %s: %w", filename, err)
+			return fmt.Errorf("write pinned frigo %s: %w", filename, err)
 		}
 	}
-	commandArgs := append([]string{"--git-dir=" + gitDir, "--work-tree=" + w.repo.Root}, args...)
-	output, err = client.Output(ctx, w.repo.Root, commandArgs...)
-	return output, err
+	return run([]string{"--git-dir=" + gitDir, "--work-tree=" + w.repo.Root, "-c", "core.fsmonitor="})
 }
 
 func (w *Workspace) resolveHistoryBase(ctx context.Context) (historyBase, error) {
