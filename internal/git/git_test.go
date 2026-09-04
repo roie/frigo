@@ -1,7 +1,9 @@
 package git
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -91,6 +93,77 @@ func TestClientReportsExitCodeAndStderr(t *testing.T) {
 	}
 	if commandErr.Stderr != "bad command" {
 		t.Fatalf("Stderr = %q, want %q", commandErr.Stderr, "bad command")
+	}
+}
+
+func TestOutputBytesPreservesExactBytes(t *testing.T) {
+	root := testrepo.Init(t)
+	client := Client{Path: "git"}
+	tests := []struct {
+		name    string
+		payload []byte
+	}{
+		{name: "empty"},
+		{name: "terminal LF", payload: []byte("value\n")},
+		{name: "terminal CRLF", payload: []byte("value\r\n")},
+		{name: "multiple terminal newlines", payload: []byte("value\n\n")},
+		{name: "NUL bytes", payload: []byte{'a', 0, 'b', 0}},
+		{name: "non UTF-8 bytes", payload: []byte{0xff, 0xfe, '\n'}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oidOutput, err := client.OutputBytesWithInput(context.Background(), root, tt.payload, "hash-object", "-w", "--stdin")
+			if err != nil {
+				t.Fatalf("hash blob: %v", err)
+			}
+			oid := strings.TrimSpace(string(oidOutput))
+			got, err := client.OutputBytes(context.Background(), root, "cat-file", "blob", oid)
+			if err != nil {
+				t.Fatalf("OutputBytes() error = %v", err)
+			}
+			if !bytes.Equal(got, tt.payload) {
+				t.Fatalf("OutputBytes() = %v, want %v", got, tt.payload)
+			}
+		})
+	}
+}
+
+func TestOutputBytesWithInputPreservesBatchResponse(t *testing.T) {
+	root := testrepo.Init(t)
+	client := Client{Path: "git"}
+	payload := []byte{'a', 0, 0xff, '\n'}
+	oidOutput, err := client.OutputBytesWithInput(context.Background(), root, payload, "hash-object", "-w", "--stdin")
+	if err != nil {
+		t.Fatalf("hash blob: %v", err)
+	}
+	oid := strings.TrimSpace(string(oidOutput))
+
+	got, err := client.OutputBytesWithInput(context.Background(), root, []byte(oid+"\n"), "cat-file", "--batch")
+	if err != nil {
+		t.Fatalf("OutputBytesWithInput() error = %v", err)
+	}
+	want := append([]byte(fmt.Sprintf("%s blob %d\n", oid, len(payload))), payload...)
+	want = append(want, '\n')
+	if !bytes.Equal(got, want) {
+		t.Fatalf("OutputBytesWithInput() = %v, want %v", got, want)
+	}
+}
+
+func TestOutputBytesDiscardsStdoutOnFailure(t *testing.T) {
+	client := stubClient(t, "FRIGO_OUTPUT=partial", "FRIGO_STDERR=bad command\n", "FRIGO_EXIT_CODE=7")
+	got, err := client.OutputBytes(context.Background(), "", "status")
+	if err == nil {
+		t.Fatal("OutputBytes() error = nil, want error")
+	}
+	if got != nil {
+		t.Fatalf("OutputBytes() = %v, want nil", got)
+	}
+	commandErr, ok := err.(*CommandError)
+	if !ok {
+		t.Fatalf("OutputBytes() error type = %T, want *CommandError", err)
+	}
+	if commandErr.ExitCode != 7 || commandErr.Stderr != "bad command" {
+		t.Fatalf("OutputBytes() error = %#v", commandErr)
 	}
 }
 

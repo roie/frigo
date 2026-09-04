@@ -78,30 +78,52 @@ func mergeEnvironment(base []string, assignments ...string) []string {
 
 // Output runs Git and returns stdout with only one terminal newline removed.
 func (c Client) Output(ctx context.Context, dir string, args ...string) (string, error) {
-	return c.OutputWithInput(ctx, dir, "", args...)
+	output, err := c.OutputBytes(ctx, dir, args...)
+	if err != nil {
+		return "", err
+	}
+	return trimTerminalNewline(string(output)), nil
 }
 
 // OutputWithInput runs Git with stdin and returns stdout with only one terminal newline removed.
 func (c Client) OutputWithInput(ctx context.Context, dir, input string, args ...string) (string, error) {
-	return c.outputWithInput(ctx, dir, input, true, args...)
+	output, err := c.outputBytesWithInput(ctx, dir, []byte(input), true, args...)
+	if err != nil {
+		return "", err
+	}
+	return trimTerminalNewline(string(output)), nil
 }
 
 // OutputWithInputNoLiteralPathspecs runs Git with stdin and literal pathspec mode disabled.
 func (c Client) OutputWithInputNoLiteralPathspecs(ctx context.Context, dir, input string, args ...string) (string, error) {
-	return c.outputWithInput(ctx, dir, input, false, args...)
+	output, err := c.outputBytesWithInput(ctx, dir, []byte(input), false, args...)
+	if err != nil {
+		return "", err
+	}
+	return trimTerminalNewline(string(output)), nil
 }
 
-func (c Client) outputWithInput(ctx context.Context, dir, input string, literalPathspecs bool, args ...string) (string, error) {
+// OutputBytes runs Git and returns stdout without modification.
+func (c Client) OutputBytes(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	return c.OutputBytesWithInput(ctx, dir, nil, args...)
+}
+
+// OutputBytesWithInput runs Git with byte input and returns stdout without modification.
+func (c Client) OutputBytesWithInput(ctx context.Context, dir string, input []byte, args ...string) ([]byte, error) {
+	return c.outputBytesWithInput(ctx, dir, input, true, args...)
+}
+
+func (c Client) outputBytesWithInput(ctx context.Context, dir string, input []byte, literalPathspecs bool, args ...string) ([]byte, error) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd := c.commandWithLiteralPathspecs(ctx, dir, literalPathspecs, args...)
-	cmd.Stdin = strings.NewReader(input)
+	cmd.Stdin = bytes.NewReader(input)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return "", newCommandError(args, stderr.String(), err)
+		return nil, newCommandError(args, stderr.String(), err)
 	}
-	return trimTerminalNewline(stdout.String()), nil
+	return bytes.Clone(stdout.Bytes()), nil
 }
 
 // Run runs Git with caller-provided streams.
