@@ -24,10 +24,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      - if: matrix.os == 'ubuntu-latest'
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 24
+          node-version: 18
           package-manager-cache: false
       - if: matrix.os == 'ubuntu-latest'
         run: test -z "$(gofmt -l $(git ls-files '*.go'))"
@@ -41,7 +40,8 @@ jobs:
             scripts/release-workflow.test.js \
             scripts/verify-release-assets.test.js
       - run: go test ./...
-      - if: matrix.os == 'ubuntu-latest'
+      - name: Package smoke test
+        shell: bash
         run: bash scripts/package_test.sh
   race:
     runs-on: ubuntu-latest

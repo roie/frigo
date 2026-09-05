@@ -161,7 +161,37 @@ frigo --help
 frigo --version
 ```
 
+Explicit scriptable forms are also available:
+
+```text
+frigo status --porcelain=v1 -z [--] [<path>...]
+frigo list -z
+frigo ls -z
+frigo diff --patch [--] [<path>...]
+frigo log --porcelain=v1 -z [--max-count=<n>] [--skip=<n>] [<revision>]
+frigo show --name-status -z <revision> [-- <path>...]
+frigo show --patch <revision> [-- <path>...]
+frigo show <revision>:<path>
+```
+
 Running `frigo` without arguments prints concise usage. Use `frigo help` or `frigo --help` for detailed help.
+
+## Scriptable output
+
+The explicit forms above provide stable byte-oriented output. Human command output without these options remains intended for people and may change presentation.
+
+- `status --porcelain=v1 -z` emits `XY`, one space, the worktree-root-relative path, and NUL for each changed Frigo file.
+- `list -z` and `ls -z` emit each exact ownership root followed by NUL.
+- `diff --patch` and `show --patch` emit only Git unified patch bytes. Clean or unmatched output is zero bytes.
+- `log --porcelain=v1 -z` emits ten NUL-terminated fields per commit, in this order: full object ID, space-separated parents, subject, body, author name, author email, author time, committer name, committer email, and committer time.
+- `show --name-status -z` emits pairs of one-byte status and path fields, with each field followed by NUL.
+- `show <revision>:<path>` emits the exact stored blob bytes, including empty, binary, and non-newline-terminated content.
+
+Machine-output paths are valid UTF-8, slash-separated, relative to the Git worktree root, and sorted by unsigned UTF-8 bytes where the format defines sorting. NUL is a delimiter, so shell command substitution is not suitable for these forms.
+
+Machine revisions are required where shown. Frigo resolves one nonempty commit-ish, such as `HEAD`, `HEAD~2`, or an unambiguous object ID, to exactly one commit in Frigo history. Ranges and commit sets are rejected. Historical path arguments remain valid after ownership is released.
+
+A successful empty result exits `0` and writes zero bytes. Usage errors exit `2`; repository or operational failures exit `1`. Frigo collects and validates a complete machine response before writing stdout, so a detected read failure writes no partial records. This guarantee intentionally buffers the complete response in memory in v1, including large histories, patches, and blobs.
 
 ## Add files
 

@@ -211,10 +211,44 @@ test("CI runs release safety tests directly", () => {
 	);
 });
 
-test("release compatibility tests show on Git 2.23", () => {
+test("release compatibility tests cover scriptable output on Git 2.23", () => {
 	const start = workflow.indexOf("- name: Run Git 2.23 compatibility tests");
 	assert.notEqual(start, -1, "Git 2.23 compatibility step is missing");
 	const end = workflow.indexOf("\n  release:", start);
 	const compatibilityStep = workflow.slice(start, end === -1 ? undefined : end);
-	assert.match(compatibilityStep, /\^TestShowReportsLatestCommitAndFullPatch\$/);
+	for (const testName of [
+		"TestDiffPatchPreservesExactOutput",
+		"TestDiffPatchIncludesAdditionsAndDirectoryDeletions",
+		"TestStatusPorcelainEmitsSortedNULRecords",
+		"TestStatusPorcelainAndDiffPatchDisableFSMonitor",
+		"TestLogPorcelainEmitsFixedCommitRecords",
+		"TestShowNameStatusReturnsSortedHistoricalChanges",
+		"TestShowBlobPreservesExactHistoricalBytes",
+	]) {
+		assert.match(
+			compatibilityStep,
+			new RegExp(`\\^${testName}\\$`),
+			`${testName} is missing from Git 2.23 coverage`,
+		);
+	}
+});
+
+test("installed launcher bytes are checked before publication on every supported OS", () => {
+	for (const [name, source] of [["CI", ciWorkflow], ["release", workflow]]) {
+		const verify = source.slice(source.indexOf("\n  verify:"), source.indexOf("\n  race:"));
+		assert.match(verify, /os: \[ubuntu-latest, macos-latest, windows-latest\]/, name);
+		const steps = verify.split(/\n {6}- /).slice(1);
+		const setup = steps.find((step) => step.includes("actions/setup-node@"));
+		assert.ok(setup, `${name} must install Node for packaged bytes`);
+		assert.doesNotMatch(setup, /\bif:/, `${name} Node must run on every OS`);
+		assert.match(setup, /node-version: 18/, `${name} must exercise the minimum Node version`);
+		const smoke = steps.find((step) => step.includes("bash scripts/package_test.sh"));
+		assert.ok(smoke, `${name} must run the packaged launcher tests`);
+		assert.doesNotMatch(smoke, /\bif:/, `${name} package bytes must run on every OS`);
+		assert.match(smoke, /shell: bash/, `${name} must explicitly use Bash on Windows`);
+	}
+	const packageScript = fs.readFileSync(path.join(__dirname, "package_test.sh"), "utf8");
+	assert.match(packageScript, /node "\$repo_root\/scripts\/package-bytes\.js" "\$pkg_dir\/bin\/frigo\.js"/);
+	assert.match(packageScript, /go version -m "\$binary"/);
+	assert.match(packageScript, /native_cache_dir=\$\(native_path "\$cache_dir"\)/);
 });

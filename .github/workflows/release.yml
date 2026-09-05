@@ -50,8 +50,14 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 18
+          package-manager-cache: false
+
       - name: Package smoke test
-        if: matrix.os == 'ubuntu-latest'
+        shell: bash
         run: bash scripts/package_test.sh
 
   race:
@@ -111,7 +117,7 @@ jobs:
       - name: Run Git 2.23 compatibility tests
         env:
           GOFLAGS: -mod=readonly
-        run: go test ./internal/frigo -run '^TestPrivateAttributesPreserveBytesAndDiff$|^TestCommitRejectsStaleHistoryBase$|^TestConcurrentUnbornCommit$|^TestCommitRejectsHistoryBaseDeletedConcurrently$|^TestShowReportsLatestCommitAndFullPatch$' -count=1
+        run: go test ./internal/frigo -run '^TestPrivateAttributesPreserveBytesAndDiff$|^TestCommitRejectsStaleHistoryBase$|^TestConcurrentUnbornCommit$|^TestCommitRejectsHistoryBaseDeletedConcurrently$|^TestShowReportsLatestCommitAndFullPatch$|^TestDiffPatchPreservesExactOutput$|^TestDiffPatchIncludesAdditionsAndDirectoryDeletions$|^TestStatusPorcelainEmitsSortedNULRecords$|^TestStatusPorcelainAndDiffPatchDisableFSMonitor$|^TestLogPorcelainEmitsFixedCommitRecords$|^TestShowNameStatusReturnsSortedHistoricalChanges$|^TestShowBlobPreservesExactHistoricalBytes$' -count=1
 
   release:
     name: Publish

@@ -19,6 +19,15 @@ esac
 workdir=$(mktemp -d)
 server_pid=
 
+# Native Node/Go processes on Windows need native paths in environment values.
+native_path() {
+	if command -v cygpath >/dev/null 2>&1; then
+		cygpath -m "$1"
+	else
+		printf '%s\n' "$1"
+	fi
+}
+
 stop_server() {
 	if [ -n "$server_pid" ]; then
 		kill "$server_pid" 2>/dev/null || true
@@ -55,21 +64,23 @@ GOFLAGS=-mod=readonly GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath 
 
 assert_target() {
 	local binary=$1
-	local expected=$2
-	local description
-	description=$(file -b "$binary")
-	if [[ "$description" != *"$expected"* ]]; then
-		printf 'unexpected target for %s\nexpected: %s\nactual: %s\n' "$binary" "$expected" "$description" >&2
+	local expected_os=$2
+	local expected_arch=$3
+	local metadata
+	metadata=$(go version -m "$binary")
+	if ! grep -Eq "^[[:space:]]*build[[:space:]]+GOOS=$expected_os$" <<<"$metadata" ||
+		! grep -Eq "^[[:space:]]*build[[:space:]]+GOARCH=$expected_arch$" <<<"$metadata"; then
+		printf 'unexpected target for %s\nexpected: %s/%s\nactual: %s\n' "$binary" "$expected_os" "$expected_arch" "$metadata" >&2
 		exit 1
 	fi
 }
 
-assert_target "$stage/vendor/linux-x64/frigo" "ELF 64-bit LSB executable, x86-64"
-assert_target "$stage/vendor/linux-arm64/frigo" "ELF 64-bit LSB executable, ARM aarch64"
-assert_target "$stage/vendor/win32-x64/frigo.exe" "PE32+ executable (console) x86-64"
-assert_target "$stage/vendor/win32-arm64/frigo.exe" "PE32+ executable (console) Aarch64"
-assert_target "$stage/vendor/darwin-x64/frigo" "Mach-O 64-bit x86_64 executable"
-assert_target "$stage/vendor/darwin-arm64/frigo" "Mach-O 64-bit arm64 executable"
+assert_target "$stage/vendor/linux-x64/frigo" linux amd64
+assert_target "$stage/vendor/linux-arm64/frigo" linux arm64
+assert_target "$stage/vendor/win32-x64/frigo.exe" windows amd64
+assert_target "$stage/vendor/win32-arm64/frigo.exe" windows arm64
+assert_target "$stage/vendor/darwin-x64/frigo" darwin amd64
+assert_target "$stage/vendor/darwin-arm64/frigo" darwin arm64
 
 node "$repo_root/scripts/build-release-assets.js" "$stage/vendor" "$release_assets"
 node "$repo_root/scripts/build-release-assets.js" --verify-manifest "$release_assets/checksums.json"
@@ -123,7 +134,7 @@ fi
 
 pkg_dir="$install_dir/node_modules/frigo"
 frigo_bin="$install_dir/node_modules/.bin/frigo"
-if [ "$(node -p "require('$pkg_dir/package.json').version")" != "$version" ]; then
+if [ "$(node -p 'require(process.argv[1]).version' "$(native_path "$pkg_dir/package.json")")" != "$version" ]; then
 	printf 'package.json version mismatch\n' >&2
 	exit 1
 fi
@@ -146,7 +157,7 @@ if ! cmp "$pkg_dir/checksums.json" "$release_assets/checksums.json"; then
 	exit 1
 fi
 
-NODE_PATH="$install_dir/node_modules" node --test "$repo_root/npm/test/runtime.test.js"
+NODE_PATH="$(native_path "$install_dir/node_modules")" node --test "$repo_root/npm/test/runtime.test.js"
 
 port_file="$workdir/release-server.port"
 start_server() {
@@ -170,6 +181,7 @@ start_server() {
 }
 
 cache_dir="$workdir/cache"
+native_cache_dir=$(native_path "$cache_dir")
 triple=$(node -p '`${process.platform}-${process.arch}`')
 case "$triple" in
 	linux-x64|linux-arm64|darwin-x64|darwin-arm64) cached_name=frigo ;;
@@ -180,7 +192,7 @@ target_cache_dir="$cache_dir/$version/$triple"
 cached_binary="$target_cache_dir/$cached_name"
 
 start_server
-first_output=$(FRIGO_CACHE_DIR="$cache_dir" FRIGO_RELEASE_BASE_URL="$release_base_url" "$frigo_bin" --version)
+first_output=$(FRIGO_CACHE_DIR="$native_cache_dir" FRIGO_RELEASE_BASE_URL="$release_base_url" "$frigo_bin" --version)
 if [ "$first_output" != "frigo $version" ]; then
 	printf 'unexpected first-run version output: %s\n' "$first_output" >&2
 	exit 1
@@ -191,7 +203,7 @@ if [ ! -f "$cached_binary" ]; then
 fi
 
 stop_server
-cached_output=$(FRIGO_CACHE_DIR="$cache_dir" FRIGO_RELEASE_BASE_URL="http://127.0.0.1:1" "$frigo_bin" --version)
+cached_output=$(FRIGO_CACHE_DIR="$native_cache_dir" FRIGO_RELEASE_BASE_URL="http://127.0.0.1:1" "$frigo_bin" --version)
 if [ "$cached_output" != "frigo $version" ]; then
 	printf 'unexpected offline cached version output: %s\n' "$cached_output" >&2
 	exit 1
@@ -199,7 +211,7 @@ fi
 
 start_server
 printf 'corrupt' >"$cached_binary"
-recovered_output=$(FRIGO_CACHE_DIR="$cache_dir" FRIGO_RELEASE_BASE_URL="$release_base_url" "$frigo_bin" --version)
+recovered_output=$(FRIGO_CACHE_DIR="$native_cache_dir" FRIGO_RELEASE_BASE_URL="$release_base_url" "$frigo_bin" --version)
 if [ "$recovered_output" != "frigo $version" ]; then
 	printf 'corrupt cache was not recovered: %s\n' "$recovered_output" >&2
 	exit 1
@@ -215,7 +227,7 @@ fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 NODE
 rm -rf "$target_cache_dir"
 set +e
-checksum_output=$(FRIGO_CACHE_DIR="$cache_dir" FRIGO_RELEASE_BASE_URL="$release_base_url" "$frigo_bin" --version 2>&1)
+checksum_output=$(FRIGO_CACHE_DIR="$native_cache_dir" FRIGO_RELEASE_BASE_URL="$release_base_url" "$frigo_bin" --version 2>&1)
 checksum_status=$?
 set -e
 if [ "$checksum_status" -eq 0 ] || [[ "$checksum_output" != *"Checksum mismatch"* ]]; then
@@ -236,7 +248,7 @@ fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 NODE
 rm -rf "$target_cache_dir"
 set +e
-binary_checksum_output=$(FRIGO_CACHE_DIR="$cache_dir" FRIGO_RELEASE_BASE_URL="$release_base_url" "$frigo_bin" --version 2>&1)
+binary_checksum_output=$(FRIGO_CACHE_DIR="$native_cache_dir" FRIGO_RELEASE_BASE_URL="$release_base_url" "$frigo_bin" --version 2>&1)
 binary_checksum_status=$?
 set -e
 if [ "$binary_checksum_status" -eq 0 ] || [[ "$binary_checksum_output" != *"Binary checksum mismatch"* ]]; then
@@ -251,9 +263,9 @@ mv "$workdir/checksums.json.original" "$pkg_dir/checksums.json"
 
 rm -rf "$target_cache_dir"
 set +e
-FRIGO_CACHE_DIR="$cache_dir" FRIGO_RELEASE_BASE_URL="$release_base_url" "$frigo_bin" --version >"$workdir/concurrent-1.out" 2>"$workdir/concurrent-1.err" &
+FRIGO_CACHE_DIR="$native_cache_dir" FRIGO_RELEASE_BASE_URL="$release_base_url" "$frigo_bin" --version >"$workdir/concurrent-1.out" 2>"$workdir/concurrent-1.err" &
 pid_one=$!
-FRIGO_CACHE_DIR="$cache_dir" FRIGO_RELEASE_BASE_URL="$release_base_url" "$frigo_bin" --version >"$workdir/concurrent-2.out" 2>"$workdir/concurrent-2.err" &
+FRIGO_CACHE_DIR="$native_cache_dir" FRIGO_RELEASE_BASE_URL="$release_base_url" "$frigo_bin" --version >"$workdir/concurrent-2.out" 2>"$workdir/concurrent-2.err" &
 pid_two=$!
 wait "$pid_one"
 status_one=$?
@@ -278,11 +290,14 @@ fi
 
 if [ -d /dev/shm ] && [ "$(stat -c %d /dev/shm 2>/dev/null || true)" != "$(stat -c %d "$workdir" 2>/dev/null || true)" ]; then
 	rm -rf "$target_cache_dir"
-	split_output=$(TMPDIR=/dev/shm FRIGO_CACHE_DIR="$cache_dir" FRIGO_RELEASE_BASE_URL="$release_base_url" "$frigo_bin" --version)
+	split_output=$(TMPDIR=/dev/shm FRIGO_CACHE_DIR="$native_cache_dir" FRIGO_RELEASE_BASE_URL="$release_base_url" "$frigo_bin" --version)
 	if [ "$split_output" != "frigo $version" ]; then
 		printf 'split-filesystem runtime failed: %s\n' "$split_output" >&2
 		exit 1
 	fi
 fi
+
+FRIGO_CACHE_DIR="$native_cache_dir" FRIGO_RELEASE_BASE_URL="$release_base_url" \
+	node "$repo_root/scripts/package-bytes.js" "$pkg_dir/bin/frigo.js" "$workdir/scriptable-repo"
 
 printf 'package smoke test passed\n'
