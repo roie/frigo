@@ -118,7 +118,7 @@ package/checksums.json
 package/package.json
 EOF
 )
-actual_files=$(tar -tzf "$tarball_path" | sort)
+actual_files=$(tar -tzf "$tarball_path" | LC_ALL=C sort)
 if [ "$actual_files" != "$expected_files" ]; then
 	printf 'unexpected tarball contents\nexpected:\n%s\nactual:\n%s\n' "$expected_files" "$actual_files" >&2
 	exit 1

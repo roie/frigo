@@ -84,9 +84,9 @@ test("defaultCacheRoot follows host conventions", () => {
 test("FRIGO_CACHE_DIR overrides the default cache", () => {
 	assert.equal(
 		runtime.defaultCacheRoot(
-			"linux",
+			process.platform,
 			{ FRIGO_CACHE_DIR: "./relative-cache" },
-			"/home/me",
+			os.homedir(),
 		),
 		path.resolve("relative-cache"),
 	);
@@ -268,10 +268,10 @@ test("requestWithRedirects honors HTTP_PROXY", async (t) => {
 			else process.env[key] = value;
 		}
 	});
-	process.env.HTTP_PROXY = `http://127.0.0.1:${proxyPort}`;
 	delete process.env.http_proxy;
-	process.env.NO_PROXY = "";
 	delete process.env.no_proxy;
+	process.env.HTTP_PROXY = `http://127.0.0.1:${proxyPort}`;
+	process.env.NO_PROXY = "";
 
 	const destination = path.join(root, "asset.gz");
 	await runtime.requestWithRedirects(
