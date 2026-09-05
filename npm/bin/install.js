@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 
-const { createHash } = require("node:crypto");
-const fs = require("node:fs");
-const fsp = fs.promises;
-const http = require("node:http");
-const https = require("node:https");
-const os = require("node:os");
-const path = require("node:path");
-const { Transform } = require("node:stream");
-const { pipeline } = require("node:stream/promises");
-const zlib = require("node:zlib");
+import { createHash } from "node:crypto";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import http from "node:http";
+import https from "node:https";
+import os from "node:os";
+import path from "node:path";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import zlib from "node:zlib";
 
-const { HttpsProxyAgent } = require("https-proxy-agent");
-const { getProxyForUrl } = require("proxy-from-env");
+import { HttpsProxyAgent } from "https-proxy-agent";
+import { getProxyForUrl } from "proxy-from-env";
 
 const INSTALL_TIMEOUT_MS = 120_000;
 const MAX_REDIRECTS = 10;
@@ -47,7 +47,11 @@ function pathApiFor(platform) {
 	return platform === "win32" ? path.win32 : path.posix;
 }
 
-function defaultCacheRoot(platform = process.platform, env = process.env, homedir = os.homedir()) {
+function defaultCacheRoot(
+	platform = process.platform,
+	env = process.env,
+	homedir = os.homedir(),
+) {
 	const pathApi = pathApiFor(platform);
 	if (env.FRIGO_CACHE_DIR) {
 		if (platform === process.platform) {
@@ -59,17 +63,27 @@ function defaultCacheRoot(platform = process.platform, env = process.env, homedi
 		return pathApi.join(homedir, "Library", "Caches", "frigo");
 	}
 	if (platform === "win32") {
-		const localAppData = env.LOCALAPPDATA || pathApi.join(homedir, "AppData", "Local");
+		const localAppData =
+			env.LOCALAPPDATA || pathApi.join(homedir, "AppData", "Local");
 		return pathApi.join(localAppData, "frigo", "Cache");
 	}
-	return pathApi.join(env.XDG_CACHE_HOME || pathApi.join(homedir, ".cache"), "frigo");
+	return pathApi.join(
+		env.XDG_CACHE_HOME || pathApi.join(homedir, ".cache"),
+		"frigo",
+	);
 }
 
 function validateEntry(entry, triple) {
 	if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
 		throw new Error(`Missing checksum entry for ${triple} in checksums.json`);
 	}
-	for (const field of ["asset", "sha256", "compressedSize", "binarySha256", "binarySize"]) {
+	for (const field of [
+		"asset",
+		"sha256",
+		"compressedSize",
+		"binarySha256",
+		"binarySize",
+	]) {
 		if (!Object.prototype.hasOwnProperty.call(entry, field)) {
 			throw new Error(`Missing checksum field ${field} for ${triple}`);
 		}
@@ -147,7 +161,9 @@ function byteCounter(expectedSize, label) {
 		transform(chunk, _encoding, callback) {
 			actualSize += chunk.length;
 			if (actualSize > expectedSize) {
-				callback(new Error(`${label} exceeds expected size of ${expectedSize} bytes`));
+				callback(
+					new Error(`${label} exceeds expected size of ${expectedSize} bytes`),
+				);
 				return;
 			}
 			callback(null, chunk);
@@ -165,7 +181,9 @@ function requestWithRedirects(
 	deadline = Date.now() + timeoutMs,
 ) {
 	if (redirectsLeft < 0) {
-		return Promise.reject(new Error("Too many redirects while downloading frigo binary"));
+		return Promise.reject(
+			new Error("Too many redirects while downloading frigo binary"),
+		);
 	}
 	const remainingMs = deadline - Date.now();
 	if (remainingMs <= 0) {
@@ -176,10 +194,14 @@ function requestWithRedirects(
 	try {
 		parsedUrl = new URL(url);
 	} catch (error) {
-		return Promise.reject(new Error(`Invalid frigo release URL: ${error.message}`));
+		return Promise.reject(
+			new Error(`Invalid frigo release URL: ${error.message}`),
+		);
 	}
 	if (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") {
-		return Promise.reject(new Error(`Unsupported frigo release URL protocol: ${parsedUrl.protocol}`));
+		return Promise.reject(
+			new Error(`Unsupported frigo release URL protocol: ${parsedUrl.protocol}`),
+		);
 	}
 
 	const proxy = getProxyForUrl(url);
@@ -211,12 +233,23 @@ function requestWithRedirects(
 			}
 			if (statusCode !== 200) {
 				response.resume();
-				reject(new Error(`Download failed with HTTP ${statusCode} ${response.statusMessage || ""}`.trim()));
+				reject(
+					new Error(
+						`Download failed with HTTP ${statusCode} ${response.statusMessage || ""}`.trim(),
+					),
+				);
 				return;
 			}
 
-			const { counter, size } = byteCounter(expectedSize, "Compressed frigo binary");
-			pipeline(response, counter, fs.createWriteStream(destinationPath, { mode: 0o600 }))
+			const { counter, size } = byteCounter(
+				expectedSize,
+				"Compressed frigo binary",
+			);
+			pipeline(
+				response,
+				counter,
+				fs.createWriteStream(destinationPath, { mode: 0o600 }),
+			)
 				.then(() => {
 					if (size() !== expectedSize) {
 						reject(
@@ -239,7 +272,12 @@ function requestWithRedirects(
 	});
 }
 
-async function downloadWithRetries(url, destinationPath, expectedSize, options = {}) {
+async function downloadWithRetries(
+	url,
+	destinationPath,
+	expectedSize,
+	options = {},
+) {
 	const attemptTimeoutMs = options.attemptTimeoutMs ?? INSTALL_TIMEOUT_MS;
 	const totalTimeoutMs = options.totalTimeoutMs ?? DOWNLOAD_TIMEOUT_MS;
 	const maxRetries = options.maxRetries ?? MAX_RETRIES;
@@ -281,7 +319,10 @@ async function downloadWithRetries(url, destinationPath, expectedSize, options =
 }
 
 async function decompressAndVerify(compressedPath, temporaryBinaryPath, entry) {
-	const { counter, size } = byteCounter(entry.binarySize, "Decompressed frigo binary");
+	const { counter, size } = byteCounter(
+		entry.binarySize,
+		"Decompressed frigo binary",
+	);
 	try {
 		await pipeline(
 			fs.createReadStream(compressedPath),
@@ -354,18 +395,22 @@ function temporaryPath(directory, name, suffix) {
 }
 
 async function ensureBinary(options = {}) {
-	const packageRoot = options.packageRoot || path.resolve(__dirname, "..");
+	const packageRoot =
+		options.packageRoot || path.resolve(import.meta.dirname, "..");
 	const platform = options.platform || process.platform;
 	const arch = options.arch || process.arch;
 	const env = options.env || process.env;
 	const target = targetFor(platform, arch);
 	const version = options.version || readPackageVersion(packageRoot);
-	const manifestPath = options.manifestPath || path.join(packageRoot, "checksums.json");
+	const manifestPath =
+		options.manifestPath || path.join(packageRoot, "checksums.json");
 	const manifest = readJsonFile(manifestPath);
 	const entry = manifest[target.triple];
 	validateEntry(entry, target.triple);
 
-	const cacheRoot = options.cacheRoot || defaultCacheRoot(platform, env, options.homedir || os.homedir());
+	const cacheRoot =
+		options.cacheRoot ||
+		defaultCacheRoot(platform, env, options.homedir || os.homedir());
 	const targetDirectory = path.join(cacheRoot, version, target.triple);
 	const binaryName = `frigo${target.extension}`;
 	const destination = path.join(targetDirectory, binaryName);
@@ -412,7 +457,7 @@ async function ensureBinary(options = {}) {
 	return destination;
 }
 
-if (require.main === module) {
+if (import.meta.main) {
 	ensureBinary()
 		.then((binaryPath) => {
 			process.stdout.write(`${binaryPath}\n`);
@@ -423,7 +468,7 @@ if (require.main === module) {
 		});
 }
 
-module.exports = {
+export {
 	TARGETS,
 	acquireLock,
 	defaultCacheRoot,

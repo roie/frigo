@@ -148,8 +148,7 @@ test("manual recovery reuses a public release without mutating it", () => {
 	const checkoutCount = (workflow.match(/uses: actions\/checkout@/g) || [])
 		.length;
 	const resolvedCheckoutCount = (
-		workflow.match(/ref: \$\{\{ inputs\.release_tag \|\| github\.ref \}\}/g) ||
-		[]
+		workflow.match(/ref: \$\{\{ inputs\.release_tag \|\| github\.ref \}\}/g) || []
 	).length;
 	assert.equal(resolvedCheckoutCount, checkoutCount);
 	assert.match(workflow, /Download existing public release assets/);
@@ -234,21 +233,77 @@ test("release compatibility tests cover scriptable output on Git 2.23", () => {
 });
 
 test("installed launcher bytes are checked before publication on every supported OS", () => {
-	for (const [name, source] of [["CI", ciWorkflow], ["release", workflow]]) {
-		const verify = source.slice(source.indexOf("\n  verify:"), source.indexOf("\n  race:"));
-		assert.match(verify, /os: \[ubuntu-latest, macos-latest, windows-latest\]/, name);
+	for (const [name, source] of [
+		["CI", ciWorkflow],
+		["release", workflow],
+	]) {
+		const verify = source.slice(
+			source.indexOf("\n  verify:"),
+			source.indexOf("\n  race:"),
+		);
+		assert.match(
+			verify,
+			/os: \[ubuntu-latest, macos-latest, windows-latest\]/,
+			name,
+		);
 		const steps = verify.split(/\n {6}- /).slice(1);
 		const setup = steps.find((step) => step.includes("actions/setup-node@"));
 		assert.ok(setup, `${name} must install Node for packaged bytes`);
 		assert.doesNotMatch(setup, /\bif:/, `${name} Node must run on every OS`);
-		assert.match(setup, /node-version: 18/, `${name} must exercise the minimum Node version`);
-		const smoke = steps.find((step) => step.includes("bash scripts/package_test.sh"));
+		assert.match(
+			setup,
+			/node-version: 24/,
+			`${name} must exercise the supported Node LTS major`,
+		);
+		const smoke = steps.find((step) =>
+			step.includes("bash scripts/package_test.sh"),
+		);
 		assert.ok(smoke, `${name} must run the packaged launcher tests`);
-		assert.doesNotMatch(smoke, /\bif:/, `${name} package bytes must run on every OS`);
-		assert.match(smoke, /shell: bash/, `${name} must explicitly use Bash on Windows`);
+		assert.doesNotMatch(
+			smoke,
+			/\bif:/,
+			`${name} package bytes must run on every OS`,
+		);
+		assert.match(
+			smoke,
+			/shell: bash/,
+			`${name} must explicitly use Bash on Windows`,
+		);
 	}
-	const packageScript = fs.readFileSync(path.join(__dirname, "package_test.sh"), "utf8");
-	assert.match(packageScript, /node "\$repo_root\/scripts\/package-bytes\.js" "\$pkg_dir\/bin\/frigo\.js"/);
+	const packageScript = fs.readFileSync(
+		path.join(__dirname, "package_test.sh"),
+		"utf8",
+	);
+	assert.match(
+		packageScript,
+		/node "\$repo_root\/scripts\/package-bytes\.js" "\$pkg_dir\/bin\/frigo\.js"/,
+	);
 	assert.match(packageScript, /go version -m "\$binary"/);
-	assert.match(packageScript, /native_cache_dir=\$\(native_path "\$cache_dir"\)/);
+	assert.match(
+		packageScript,
+		/native_cache_dir=\$\(native_path "\$cache_dir"\)/,
+	);
+});
+
+test("npm runtime declares native ESM and current dependencies", () => {
+	const manifest = JSON.parse(
+		fs.readFileSync(path.join(__dirname, "../npm/package.json.tmpl"), "utf8"),
+	);
+	assert.equal(manifest.type, "module");
+	assert.equal(manifest.engines.node, ">=24.11.0");
+	assert.deepEqual(manifest.dependencies, {
+		"proxy-from-env": "^2.1.0",
+		"https-proxy-agent": "^9.1.0",
+	});
+	for (const filename of ["frigo.js", "install.js"]) {
+		const source = fs.readFileSync(
+			path.join(__dirname, "../npm/bin", filename),
+			"utf8",
+		);
+		assert.doesNotMatch(
+			source,
+			/\brequire\s*\(|module\.exports|\b__dirname\b/,
+			filename,
+		);
+	}
 });

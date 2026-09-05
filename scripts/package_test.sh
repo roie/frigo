@@ -3,18 +3,24 @@ set -euo pipefail
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 case "$#" in
-	0) version=0.2.0; use_prebuilt=false ;;
-	1) version=$1; use_prebuilt=false ;;
-	3)
-		version=$1
-		use_prebuilt=true
-		provided_tarball=$(cd -- "$(dirname -- "$2")" && pwd)/$(basename -- "$2")
-		provided_release_assets=$(cd -- "$3" && pwd)
-		;;
-	*)
-		printf 'usage: %s [version [tarball release-assets-dir]]\n' "${0##*/}" >&2
-		exit 1
-		;;
+0)
+	version=0.2.0
+	use_prebuilt=false
+	;;
+1)
+	version=$1
+	use_prebuilt=false
+	;;
+3)
+	version=$1
+	use_prebuilt=true
+	provided_tarball=$(cd -- "$(dirname -- "$2")" && pwd)/$(basename -- "$2")
+	provided_release_assets=$(cd -- "$3" && pwd)
+	;;
+*)
+	printf 'usage: %s [version [tarball release-assets-dir]]\n' "${0##*/}" >&2
+	exit 1
+	;;
 esac
 workdir=$(mktemp -d)
 server_pid=
@@ -43,55 +49,55 @@ cleanup() {
 trap cleanup EXIT
 
 if [ "$use_prebuilt" = false ]; then
-stage="$workdir/package"
-release_assets="$stage/release-assets"
-mkdir -p \
-	"$stage/vendor/linux-x64" \
-	"$stage/vendor/linux-arm64" \
-	"$stage/vendor/win32-x64" \
-	"$stage/vendor/win32-arm64" \
-	"$stage/vendor/darwin-x64" \
-	"$stage/vendor/darwin-arm64" \
-	"$release_assets"
+	stage="$workdir/package"
+	release_assets="$stage/release-assets"
+	mkdir -p \
+		"$stage/vendor/linux-x64" \
+		"$stage/vendor/linux-arm64" \
+		"$stage/vendor/win32-x64" \
+		"$stage/vendor/win32-arm64" \
+		"$stage/vendor/darwin-x64" \
+		"$stage/vendor/darwin-arm64" \
+		"$release_assets"
 
-ldflags="-s -w -X github.com/roie/frigo/internal/cli.version=${version}"
-GOFLAGS=-mod=readonly GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o "$stage/vendor/linux-x64/frigo" "$repo_root/cmd/frigo"
-GOFLAGS=-mod=readonly GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o "$stage/vendor/linux-arm64/frigo" "$repo_root/cmd/frigo"
-GOFLAGS=-mod=readonly GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o "$stage/vendor/win32-x64/frigo.exe" "$repo_root/cmd/frigo"
-GOFLAGS=-mod=readonly GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o "$stage/vendor/win32-arm64/frigo.exe" "$repo_root/cmd/frigo"
-GOFLAGS=-mod=readonly GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o "$stage/vendor/darwin-x64/frigo" "$repo_root/cmd/frigo"
-GOFLAGS=-mod=readonly GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o "$stage/vendor/darwin-arm64/frigo" "$repo_root/cmd/frigo"
+	ldflags="-s -w -X github.com/roie/frigo/internal/cli.version=${version}"
+	GOFLAGS=-mod=readonly GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o "$stage/vendor/linux-x64/frigo" "$repo_root/cmd/frigo"
+	GOFLAGS=-mod=readonly GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o "$stage/vendor/linux-arm64/frigo" "$repo_root/cmd/frigo"
+	GOFLAGS=-mod=readonly GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o "$stage/vendor/win32-x64/frigo.exe" "$repo_root/cmd/frigo"
+	GOFLAGS=-mod=readonly GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o "$stage/vendor/win32-arm64/frigo.exe" "$repo_root/cmd/frigo"
+	GOFLAGS=-mod=readonly GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o "$stage/vendor/darwin-x64/frigo" "$repo_root/cmd/frigo"
+	GOFLAGS=-mod=readonly GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o "$stage/vendor/darwin-arm64/frigo" "$repo_root/cmd/frigo"
 
-assert_target() {
-	local binary=$1
-	local expected_os=$2
-	local expected_arch=$3
-	local metadata
-	metadata=$(go version -m "$binary")
-	if ! grep -Eq "^[[:space:]]*build[[:space:]]+GOOS=$expected_os$" <<<"$metadata" ||
-		! grep -Eq "^[[:space:]]*build[[:space:]]+GOARCH=$expected_arch$" <<<"$metadata"; then
-		printf 'unexpected target for %s\nexpected: %s/%s\nactual: %s\n' "$binary" "$expected_os" "$expected_arch" "$metadata" >&2
-		exit 1
-	fi
-}
+	assert_target() {
+		local binary=$1
+		local expected_os=$2
+		local expected_arch=$3
+		local metadata
+		metadata=$(go version -m "$binary")
+		if ! grep -Eq "^[[:space:]]*build[[:space:]]+GOOS=$expected_os$" <<<"$metadata" ||
+			! grep -Eq "^[[:space:]]*build[[:space:]]+GOARCH=$expected_arch$" <<<"$metadata"; then
+			printf 'unexpected target for %s\nexpected: %s/%s\nactual: %s\n' "$binary" "$expected_os" "$expected_arch" "$metadata" >&2
+			exit 1
+		fi
+	}
 
-assert_target "$stage/vendor/linux-x64/frigo" linux amd64
-assert_target "$stage/vendor/linux-arm64/frigo" linux arm64
-assert_target "$stage/vendor/win32-x64/frigo.exe" windows amd64
-assert_target "$stage/vendor/win32-arm64/frigo.exe" windows arm64
-assert_target "$stage/vendor/darwin-x64/frigo" darwin amd64
-assert_target "$stage/vendor/darwin-arm64/frigo" darwin arm64
+	assert_target "$stage/vendor/linux-x64/frigo" linux amd64
+	assert_target "$stage/vendor/linux-arm64/frigo" linux arm64
+	assert_target "$stage/vendor/win32-x64/frigo.exe" windows amd64
+	assert_target "$stage/vendor/win32-arm64/frigo.exe" windows arm64
+	assert_target "$stage/vendor/darwin-x64/frigo" darwin amd64
+	assert_target "$stage/vendor/darwin-arm64/frigo" darwin arm64
 
-node "$repo_root/scripts/build-release-assets.js" "$stage/vendor" "$release_assets"
-node "$repo_root/scripts/build-release-assets.js" --verify-manifest "$release_assets/checksums.json"
+	node "$repo_root/scripts/build-release-assets.js" "$stage/vendor" "$release_assets"
+	node "$repo_root/scripts/build-release-assets.js" --verify-manifest "$release_assets/checksums.json"
 
-"$repo_root/scripts/build-npm-package.sh" "$version" \
-	"$stage/npm" \
-	"$release_assets/checksums.json"
+	"$repo_root/scripts/build-npm-package.sh" "$version" \
+		"$stage/npm" \
+		"$release_assets/checksums.json"
 
-cd "$stage/npm"
-tarball=$(npm pack --silent)
-tarball_path="$stage/npm/$tarball"
+	cd "$stage/npm"
+	tarball=$(npm pack --silent)
+	tarball_path="$stage/npm/$tarball"
 else
 	tarball_path=$provided_tarball
 	release_assets=$provided_release_assets
@@ -157,7 +163,7 @@ if ! cmp "$pkg_dir/checksums.json" "$release_assets/checksums.json"; then
 	exit 1
 fi
 
-NODE_PATH="$(native_path "$install_dir/node_modules")" node --test "$repo_root/npm/test/runtime.test.js"
+FRIGO_TEST_PACKAGE_ROOT="$(native_path "$pkg_dir")" node --test "$repo_root/npm/test/runtime.test.mjs"
 
 port_file="$workdir/release-server.port"
 start_server() {
@@ -184,9 +190,12 @@ cache_dir="$workdir/cache"
 native_cache_dir=$(native_path "$cache_dir")
 triple=$(node -p '`${process.platform}-${process.arch}`')
 case "$triple" in
-	linux-x64|linux-arm64|darwin-x64|darwin-arm64) cached_name=frigo ;;
-	win32-x64|win32-arm64) cached_name=frigo.exe ;;
-	*) printf 'package smoke test does not support host %s\n' "$triple" >&2; exit 1 ;;
+linux-x64 | linux-arm64 | darwin-x64 | darwin-arm64) cached_name=frigo ;;
+win32-x64 | win32-arm64) cached_name=frigo.exe ;;
+*)
+	printf 'package smoke test does not support host %s\n' "$triple" >&2
+	exit 1
+	;;
 esac
 target_cache_dir="$cache_dir/$version/$triple"
 cached_binary="$target_cache_dir/$cached_name"

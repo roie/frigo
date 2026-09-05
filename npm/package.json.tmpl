@@ -1,6 +1,7 @@
 {
   "name": "frigo",
   "version": "@@VERSION@@",
+  "type": "module",
   "description": "Keep local project files without adding them to your main Git history.",
   "bin": {
     "frigo": "bin/frigo.js"
@@ -36,10 +37,10 @@
     "arm64"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=24.11.0"
   },
   "dependencies": {
     "proxy-from-env": "^2.1.0",
-    "https-proxy-agent": "^7.0.6"
+    "https-proxy-agent": "^9.1.0"
   }
 }

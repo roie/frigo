@@ -1,12 +1,19 @@
-const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const http = require("node:http");
-const net = require("node:net");
-const os = require("node:os");
-const path = require("node:path");
-const test = require("node:test");
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import http from "node:http";
+import net from "node:net";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { pathToFileURL } from "node:url";
 
-const runtime = require("../bin/install.js");
+assert.ok(
+	process.env.FRIGO_TEST_PACKAGE_ROOT,
+	"FRIGO_TEST_PACKAGE_ROOT must name the installed package",
+);
+const runtime = await import(
+	pathToFileURL(path.join(process.env.FRIGO_TEST_PACKAGE_ROOT, "bin/install.js"))
+);
 
 const validEntry = {
 	asset: "frigo-linux-x64.gz",
@@ -41,18 +48,31 @@ test("targetFor maps all six supported targets", () => {
 		triple: "win32-arm64",
 		extension: ".exe",
 	});
-	assert.throws(() => runtime.targetFor("sunos", "riscv64"), /Unsupported platform.*sunos-riscv64/);
+	assert.throws(
+		() => runtime.targetFor("sunos", "riscv64"),
+		/Unsupported platform.*sunos-riscv64/,
+	);
 });
 
 test("defaultCacheRoot follows host conventions", () => {
-	assert.equal(runtime.defaultCacheRoot("linux", { XDG_CACHE_HOME: "/xdg" }, "/home/me"), "/xdg/frigo");
-	assert.equal(runtime.defaultCacheRoot("linux", {}, "/home/me"), "/home/me/.cache/frigo");
+	assert.equal(
+		runtime.defaultCacheRoot("linux", { XDG_CACHE_HOME: "/xdg" }, "/home/me"),
+		"/xdg/frigo",
+	);
+	assert.equal(
+		runtime.defaultCacheRoot("linux", {}, "/home/me"),
+		"/home/me/.cache/frigo",
+	);
 	assert.equal(
 		runtime.defaultCacheRoot("darwin", {}, "/Users/me"),
 		"/Users/me/Library/Caches/frigo",
 	);
 	assert.equal(
-		runtime.defaultCacheRoot("win32", { LOCALAPPDATA: "C:\\Local" }, "C:\\Users\\me"),
+		runtime.defaultCacheRoot(
+			"win32",
+			{ LOCALAPPDATA: "C:\\Local" },
+			"C:\\Users\\me",
+		),
 		"C:\\Local\\frigo\\Cache",
 	);
 	assert.equal(
@@ -63,7 +83,11 @@ test("defaultCacheRoot follows host conventions", () => {
 
 test("FRIGO_CACHE_DIR overrides the default cache", () => {
 	assert.equal(
-		runtime.defaultCacheRoot("linux", { FRIGO_CACHE_DIR: "./relative-cache" }, "/home/me"),
+		runtime.defaultCacheRoot(
+			"linux",
+			{ FRIGO_CACHE_DIR: "./relative-cache" },
+			"/home/me",
+		),
 		path.resolve("relative-cache"),
 	);
 });
@@ -80,11 +104,16 @@ test("validateEntry requires binarySha256", () => {
 
 test("validateEntry rejects unsafe asset names and malformed integrity", () => {
 	assert.throws(
-		() => runtime.validateEntry({ ...validEntry, asset: "../frigo-linux-x64.gz" }, "linux-x64"),
+		() =>
+			runtime.validateEntry(
+				{ ...validEntry, asset: "../frigo-linux-x64.gz" },
+				"linux-x64",
+			),
 		/asset/,
 	);
 	assert.throws(
-		() => runtime.validateEntry({ ...validEntry, sha256: "not-a-hash" }, "linux-x64"),
+		() =>
+			runtime.validateEntry({ ...validEntry, sha256: "not-a-hash" }, "linux-x64"),
 		/sha256/,
 	);
 	assert.throws(
@@ -122,7 +151,11 @@ test("requestWithRedirects follows redirects and enforces size", async (t) => {
 	});
 	const port = await listen(t, server);
 	const destination = path.join(root, "asset.gz");
-	await runtime.requestWithRedirects(`http://127.0.0.1:${port}/redirect`, destination, body.length);
+	await runtime.requestWithRedirects(
+		`http://127.0.0.1:${port}/redirect`,
+		destination,
+		body.length,
+	);
 	assert.deepEqual(fs.readFileSync(destination), body);
 });
 
@@ -154,7 +187,9 @@ test("requestWithRedirects shares one timeout across redirects", async (t) => {
 });
 
 test("download retries share one deadline", async (t) => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "frigo-retry-deadline-test-"));
+	const root = fs.mkdtempSync(
+		path.join(os.tmpdir(), "frigo-retry-deadline-test-"),
+	);
 	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 	const server = http.createServer((_request, response) => {
 		response.writeHead(500).end("retry");
@@ -190,7 +225,10 @@ test("old cache lock is preserved on timeout", async (t) => {
 		(error) => {
 			assert.match(error.message, /verify that no Frigo installer is running/);
 			assert.match(error.message, /remove it manually/);
-			assert.match(error.message, new RegExp(lockPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+			assert.match(
+				error.message,
+				new RegExp(lockPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+			);
 			return true;
 		},
 	);

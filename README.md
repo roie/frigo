@@ -46,7 +46,7 @@ Requirements:
 
 - An existing Git repository
 - Git 2.23 or newer on `PATH`
-- Node.js 18 or newer for the npm package and launcher
+- Node.js 24.11.0 (LTS) or newer for the native ESM npm package and launcher
 
 Supported platforms:
 
