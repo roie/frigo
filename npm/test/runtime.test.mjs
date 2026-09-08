@@ -243,10 +243,19 @@ test("requestWithRedirects honors HTTP_PROXY", async (t) => {
 		response.writeHead(200, { "content-length": body.length }).end(body);
 	});
 	const targetPort = await listen(t, target);
-	let connectCount = 0;
-	const proxy = http.createServer();
+	let proxyRequests = 0;
+	const proxy = http.createServer((request, response) => {
+		proxyRequests += 1;
+		const upstream = http.request(request.url, { agent: false }, (incoming) => {
+			response.writeHead(incoming.statusCode, incoming.headers);
+			incoming.pipe(response);
+		});
+		upstream.on("error", () => response.destroy());
+		response.on("close", () => upstream.destroy());
+		request.pipe(upstream);
+	});
 	proxy.on("connect", (request, client, head) => {
-		connectCount += 1;
+		proxyRequests += 1;
 		const [host, port] = request.url.split(":");
 		const upstream = net.connect(Number(port), host, () => {
 			client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
@@ -280,5 +289,5 @@ test("requestWithRedirects honors HTTP_PROXY", async (t) => {
 		body.length,
 	);
 	assert.deepEqual(fs.readFileSync(destination), body);
-	assert.equal(connectCount, 1);
+	assert.equal(proxyRequests, 1);
 });

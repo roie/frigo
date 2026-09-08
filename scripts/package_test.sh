@@ -146,6 +146,9 @@ if [ "$(node -p 'require(process.argv[1]).version' "$(native_path "$pkg_dir/pack
 fi
 node - "$pkg_dir/package.json" <<'NODE'
 const manifest = require(process.argv[2]);
+if (Object.keys(manifest.dependencies ?? {}).length > 0) {
+	throw new Error(`unexpected runtime dependencies: ${JSON.stringify(manifest.dependencies)}`);
+}
 if (manifest.scripts && Object.keys(manifest.scripts).length > 0) {
 	throw new Error(`unexpected lifecycle scripts: ${JSON.stringify(manifest.scripts)}`);
 }
@@ -163,7 +166,7 @@ if ! cmp "$pkg_dir/checksums.json" "$release_assets/checksums.json"; then
 	exit 1
 fi
 
-FRIGO_TEST_PACKAGE_ROOT="$(native_path "$pkg_dir")" node --test "$repo_root/npm/test/runtime.test.mjs"
+FRIGO_TEST_PACKAGE_ROOT="$(native_path "$pkg_dir")" node --test "$repo_root/npm/test/runtime.test.mjs" "$repo_root/npm/test/proxy.test.mjs"
 
 port_file="$workdir/release-server.port"
 start_server() {

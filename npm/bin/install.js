@@ -11,9 +11,6 @@ import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import zlib from "node:zlib";
 
-import { HttpsProxyAgent } from "https-proxy-agent";
-import { getProxyForUrl } from "proxy-from-env";
-
 const INSTALL_TIMEOUT_MS = 120_000;
 const MAX_REDIRECTS = 10;
 const MAX_RETRIES = 3;
@@ -84,7 +81,7 @@ function validateEntry(entry, triple) {
 		"binarySha256",
 		"binarySize",
 	]) {
-		if (!Object.prototype.hasOwnProperty.call(entry, field)) {
+		if (!Object.hasOwn(entry, field)) {
 			throw new Error(`Missing checksum field ${field} for ${triple}`);
 		}
 	}
@@ -172,7 +169,7 @@ function byteCounter(expectedSize, label) {
 	return { counter, size: () => actualSize };
 }
 
-function requestWithRedirects(
+async function requestWithRedirects(
 	url,
 	destinationPath,
 	expectedSize,
@@ -204,72 +201,124 @@ function requestWithRedirects(
 		);
 	}
 
-	const proxy = getProxyForUrl(url);
 	const requestModule = parsedUrl.protocol === "https:" ? https : http;
+	const envValue = (name) =>
+		process.env[name.toLowerCase()] || process.env[name] || "";
+	const proxyName =
+		parsedUrl.protocol === "https:" ? "HTTPS_PROXY" : "HTTP_PROXY";
+	let proxy = envValue(proxyName) || envValue("ALL_PROXY");
+	if (proxy && !proxy.includes("://")) proxy = `${parsedUrl.protocol}//${proxy}`;
+	if (proxy) {
+		const { protocol } = new URL(proxy);
+		if (protocol !== "http:" && protocol !== "https:") {
+			throw new Error(`Unsupported frigo proxy protocol: ${protocol}`);
+		}
+	}
+	const agent = new requestModule.Agent({
+		proxyEnv: {
+			[proxyName]: proxy,
+			NO_PROXY: envValue("NO_PROXY"),
+		},
+	});
+	// Native HTTPS CONNECT sockets are not in the agent pool until the tunnel
+	// exists. Retain the public createConnection result so the absolute deadline
+	// also closes a stalled TLS/CONNECT handshake, not just pooled sockets.
+	const sockets = new Set();
+	const createConnection = agent.createConnection;
+	agent.createConnection = function (...args) {
+		const socket = createConnection.apply(this, args);
+		if (socket) {
+			sockets.add(socket);
+			socket.once("close", () => sockets.delete(socket));
+		}
+		return socket;
+	};
 	const options = {
 		hostname: parsedUrl.hostname,
 		port: parsedUrl.port || undefined,
 		path: `${parsedUrl.pathname}${parsedUrl.search}`,
 		protocol: parsedUrl.protocol,
 		headers: { "user-agent": "frigo-install/0.2" },
-		agent: proxy ? new HttpsProxyAgent(proxy) : undefined,
+		agent,
 	};
-
-	return new Promise((resolve, reject) => {
-		const request = requestModule.get(options, (response) => {
-			const statusCode = response.statusCode || 0;
-			if (statusCode >= 300 && statusCode < 400 && response.headers.location) {
-				response.resume();
-				const nextUrl = new URL(response.headers.location, parsedUrl).toString();
-				requestWithRedirects(
-					nextUrl,
-					destinationPath,
-					expectedSize,
-					redirectsLeft - 1,
-					timeoutMs,
-					deadline,
-				).then(resolve, reject);
-				return;
-			}
-			if (statusCode !== 200) {
-				response.resume();
-				reject(
-					new Error(
-						`Download failed with HTTP ${statusCode} ${response.statusMessage || ""}`.trim(),
-					),
-				);
-				return;
-			}
-
-			const { counter, size } = byteCounter(
-				expectedSize,
-				"Compressed frigo binary",
-			);
-			pipeline(
-				response,
-				counter,
-				fs.createWriteStream(destinationPath, { mode: 0o600 }),
-			)
-				.then(() => {
-					if (size() !== expectedSize) {
-						reject(
-							new Error(
-								`Compressed frigo binary size mismatch: expected ${expectedSize} bytes, got ${size()} bytes`,
-							),
-						);
-						return;
+	let request;
+	let timeout;
+	let nextUrl;
+	let transfer;
+	try {
+		nextUrl = await new Promise((resolve, reject) => {
+			request = requestModule.get(options, (response) => {
+				const statusCode = response.statusCode || 0;
+				if (statusCode >= 300 && statusCode < 400 && response.headers.location) {
+					response.destroy();
+					try {
+						resolve(new URL(response.headers.location, parsedUrl).toString());
+					} catch (error) {
+						reject(error);
 					}
-					resolve();
-				})
-				.catch(reject);
-		});
+					return;
+				}
+				if (statusCode !== 200) {
+					response.destroy();
+					reject(
+						new Error(
+							`Download failed with HTTP ${statusCode} ${response.statusMessage || ""}`.trim(),
+						),
+					);
+					return;
+				}
 
-		const timeout = setTimeout(() => {
-			request.destroy(new Error(`Download timed out after ${timeoutMs}ms`));
-		}, remainingMs);
-		request.on("close", () => clearTimeout(timeout));
-		request.on("error", reject);
-	});
+				const { counter, size } = byteCounter(
+					expectedSize,
+					"Compressed frigo binary",
+				);
+				transfer = pipeline(
+					response,
+					counter,
+					fs.createWriteStream(destinationPath, { mode: 0o600 }),
+				)
+					.then(() => {
+						if (size() !== expectedSize) {
+							reject(
+								new Error(
+									`Compressed frigo binary size mismatch: expected ${expectedSize} bytes, got ${size()} bytes`,
+								),
+							);
+							return;
+						}
+						resolve();
+					})
+					.catch(reject);
+			});
+
+			timeout = setTimeout(
+				() => {
+					const error = new Error(`Download timed out after ${timeoutMs}ms`);
+					request.destroy(error);
+					reject(error);
+				},
+				Math.max(0, deadline - Date.now()),
+			);
+			request.on("error", reject);
+		});
+	} finally {
+		clearTimeout(timeout);
+		request?.destroy();
+		agent.destroy();
+		for (const socket of sockets) socket.destroy();
+		// Wait for the output stream to close before retries remove the partial file.
+		await transfer;
+	}
+	if (nextUrl !== undefined) {
+		await requestWithRedirects(
+			nextUrl,
+			destinationPath,
+			expectedSize,
+			redirectsLeft - 1,
+			timeoutMs,
+			deadline,
+		);
+	}
 }
 
 async function downloadWithRetries(
