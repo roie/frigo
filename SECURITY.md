@@ -1,11 +1,5 @@
 # Security policy
 
-> **Draft: pending private vulnerability reporting activation.** GitHub private
-> vulnerability reporting is currently disabled for this repository. These
-> instructions are not active. Before publishing this policy, the maintainer must
-> enable and verify private reporting, then remove this draft notice and update
-> the conditional reporting instructions below.
-
 ## Supported versions
 
 Security fixes target the latest published stable release. There is no commitment to maintain or backport fixes to older release lines. Reports of suspected vulnerabilities in any version are welcome.
@@ -14,11 +8,9 @@ Security fixes target the latest published stable release. There is no commitmen
 
 Do not disclose vulnerability details in public issues, discussions, or pull requests.
 
-Once private reporting is enabled, use GitHub's **Report a vulnerability** form at
+Use GitHub's **Report a vulnerability** form at
 <https://github.com/roie/frigo/security/advisories/new> to send a private report to
-this repository's maintainers. Until activation is verified, do not use this
-route or post sensitive details publicly; no alternative private contact is
-specified by this draft.
+this repository's maintainers.
 
 Include the affected Frigo version, operating system, Node.js and Git versions
 as relevant, reproduction steps or a minimal proof of concept, and the expected
