@@ -40,6 +40,17 @@ func (w *Workspace) ensureLayout(ctx context.Context, allowCreate bool) error {
 			return err
 		}
 		if allowCreate {
+			// Initialization may complete a partial store, but must not repair
+			// unexpected public attributes once ownership has been established.
+			registered, err := pathExists(w.repo.RegistryPath)
+			if err != nil {
+				return fmt.Errorf("inspect frigo registry: %w", err)
+			}
+			if registered {
+				if err := requireManagedFileContents(w.repo.AttributesPath, nil); err != nil {
+					return fmt.Errorf("validate frigo attributes: %w", err)
+				}
+			}
 			if err := w.initializeHistory(ctx); err != nil {
 				return err
 			}

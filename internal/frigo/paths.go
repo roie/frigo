@@ -85,6 +85,9 @@ func (w *Workspace) validateHistory(ctx context.Context) error {
 	if !strings.EqualFold(bare, "true") {
 		return fmt.Errorf("frigo history is not bare")
 	}
+	if err := requireManagedFileContents(w.repo.AttributesPath, nil); err != nil {
+		return fmt.Errorf("validate frigo attributes: %w", err)
+	}
 	if err := w.ensurePrivateAttributes(); err != nil {
 		return fmt.Errorf("ensure frigo private attributes: %w", err)
 	}
@@ -301,6 +304,26 @@ func (w *Workspace) gitMetadataInfos() ([]os.FileInfo, error) {
 		}
 	}
 	return infos, nil
+}
+
+// Validate before adoption can initialize metadata or change ownership. WalkDir
+// does not follow descendant symlinks, whose targets are not being adopted.
+func (w *Workspace) validateUTF8Descendants(paths []string) error {
+	for _, candidate := range paths {
+		filename := filepath.Join(w.repo.Root, filepath.FromSlash(candidate))
+		if err := filepath.WalkDir(filename, func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if !utf8.ValidString(entry.Name()) {
+				return fmt.Errorf("%q is not a valid UTF-8 path", path)
+			}
+			return nil
+		}); err != nil {
+			return fmt.Errorf("inspect %s: %w", candidate, err)
+		}
+	}
+	return nil
 }
 
 func (w *Workspace) intentPaths(paths []string) ([]string, error) {

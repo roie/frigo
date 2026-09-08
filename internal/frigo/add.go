@@ -30,6 +30,9 @@ func (w *Workspace) addLocked(ctx context.Context, rawPaths []string) (registry.
 	if err != nil {
 		return registry.AddResult{}, err
 	}
+	if err := w.validateUTF8Descendants(paths); err != nil {
+		return registry.AddResult{}, err
+	}
 	if err := w.ensureLayout(ctx, true); err != nil {
 		return registry.AddResult{}, err
 	}
