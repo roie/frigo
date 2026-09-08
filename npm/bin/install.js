@@ -207,12 +207,23 @@ async function requestWithRedirects(
 	const proxyName =
 		parsedUrl.protocol === "https:" ? "HTTPS_PROXY" : "HTTP_PROXY";
 	let proxy = envValue(proxyName) || envValue("ALL_PROXY");
+	// URL parsing strips CR/LF, but native rejection of the raw value includes
+	// credentials in its diagnostic. Reject before parsing or agent construction.
+	if (/[\r\n]/.test(proxy)) {
+		throw new Error("Invalid frigo proxy URL: CR/LF is not allowed");
+	}
 	if (proxy && !proxy.includes("://")) proxy = `${parsedUrl.protocol}//${proxy}`;
 	if (proxy) {
-		const { protocol } = new URL(proxy);
-		if (protocol !== "http:" && protocol !== "https:") {
-			throw new Error(`Unsupported frigo proxy protocol: ${protocol}`);
+		let parsedProxy;
+		try {
+			parsedProxy = new URL(proxy);
+		} catch {
+			throw new Error("Invalid frigo proxy URL");
 		}
+		if (parsedProxy.protocol !== "http:" && parsedProxy.protocol !== "https:") {
+			throw new Error(`Unsupported frigo proxy protocol: ${parsedProxy.protocol}`);
+		}
+		proxy = parsedProxy.href;
 	}
 	const agent = new requestModule.Agent({
 		proxyEnv: {

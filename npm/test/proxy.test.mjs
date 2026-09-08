@@ -18,8 +18,10 @@ const tlsOptions = {
 // Node #62333 landed in 24.16.0 and 26.1.0; 25.x retains broad suffix matching.
 // Characterize that real native boundary, not a wrapper-specific matcher or skip.
 const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
-const dotBoundary = (nodeMajor === 24 && nodeMinor >= 16) ||
-	(nodeMajor === 26 && nodeMinor >= 1) || nodeMajor > 26;
+const dotBoundary =
+	(nodeMajor === 24 && nodeMinor >= 16) ||
+	(nodeMajor === 26 && nodeMinor >= 1) ||
+	nodeMajor > 26;
 const body = Buffer.from([0, 255, 13, 10, 0, 128, 65, 66]);
 
 function isolatedEnv(overrides = {}) {
@@ -59,6 +61,7 @@ async function fixture(
 	options = {},
 ) {
 	const targetRequests = [];
+	const connections = { target: 0, proxy: 0 };
 	const target = (targetProtocol === "https" ? https : http).createServer(
 		targetProtocol === "https" ? tlsOptions : {},
 		(request, response) => {
@@ -67,11 +70,13 @@ async function fixture(
 			response.writeHead(200, { "content-length": body.length }).end(body);
 		},
 	);
+	target.on("connection", () => connections.target++);
 	const targetPort = await listen(t, target);
 	const requests = [];
 	const proxy = (proxyProtocol === "https" ? https : http).createServer(
 		proxyProtocol === "https" ? tlsOptions : {},
 	);
+	proxy.on("connection", () => connections.proxy++);
 	function authorize(request, response) {
 		requests.push({ url: request.url, headers: request.headers });
 		if (options.stall) return false;
@@ -124,6 +129,7 @@ async function fixture(
 		targetPort,
 		requests,
 		targetRequests,
+		connections,
 	};
 }
 
@@ -205,6 +211,82 @@ for (const targetProtocol of ["http", "https"]) {
 			assert.equal(f.targetRequests[0].url, "/asset?exact=%00");
 		});
 	}
+	for (const proxyProtocol of ["http", "https"]) {
+		for (const variable of [
+			`${targetProtocol.toUpperCase()}_PROXY`,
+			"ALL_PROXY",
+		]) {
+			for (const scheme of [
+				proxyProtocol.toUpperCase(),
+				proxyProtocol === "http" ? "HtTp" : "HtTpS",
+			]) {
+				test(`${variable} ${scheme} scheme routes ${targetProtocol} targets without leaking auth`, async (t) => {
+					const auth = `Basic ${Buffer.from("review-user:review-secret").toString("base64")}`;
+					const f = await fixture(t, targetProtocol, proxyProtocol, { auth });
+					const proxy = new URL(f.proxy);
+					proxy.username = "review-user";
+					proxy.password = "review-secret";
+					success(
+						await download(t, f.url, {
+							[variable]: proxy.href.replace(`${proxyProtocol}:`, `${scheme}:`),
+						}),
+					);
+					assert.equal(f.requests.length, 1);
+					assert.equal(f.requests[0].headers["proxy-authorization"], auth);
+					assert.equal(f.targetRequests.length, 1);
+					assert.equal(
+						f.targetRequests[0].headers["proxy-authorization"],
+						undefined,
+					);
+				});
+			}
+			for (const [name, corrupt] of [
+				["trailing CR", (url) => `${url}\r`],
+				["trailing LF", (url) => `${url}\n`],
+				["embedded CR", (url) => url.replace("review-user", "review-\ruser")],
+				["embedded LF", (url) => url.replace("review-secret", "review-\nsecret")],
+			]) {
+				test(`${variable} ${proxyProtocol} credential-bearing ${name} is rejected before traffic`, async (t) => {
+					const f = await fixture(t, targetProtocol, proxyProtocol);
+					const proxy = new URL(f.proxy);
+					proxy.username = "review-user";
+					proxy.password = "review-secret";
+					const result = await download(t, f.url, {
+						[variable]: corrupt(proxy.href),
+					});
+					assert.equal(result.code, 1);
+					assert.doesNotMatch(result.stderr, /review-|user|secret/);
+					assert.match(result.stderr, /Invalid frigo proxy URL/);
+					assert.deepEqual(f.connections, { target: 0, proxy: 0 });
+					assert.equal(f.requests.length, 0);
+					assert.equal(f.targetRequests.length, 0);
+				});
+			}
+		}
+	}
+	for (const proxyProtocol of ["http", "https"]) {
+		for (const [name, corrupt] of [
+			["invalid host", (url) => url.replace("127.0.0.1", "[invalid")],
+			["invalid port", (url) => url.replace(/:\d+\/$/, ":invalid/")],
+			[
+				"invalid credential encoding",
+				(url) => url.replace("review-user", "review-user%zz"),
+			],
+		]) {
+			test(`${targetProtocol} malformed ${proxyProtocol} proxy ${name} fails without credentials or traffic`, async (t) => {
+				const f = await fixture(t, targetProtocol, proxyProtocol);
+				const proxy = new URL(f.proxy);
+				proxy.username = "review-user";
+				proxy.password = "review-secret";
+				const result = await download(t, f.url, { ALL_PROXY: corrupt(proxy.href) });
+				assert.equal(result.code, 1);
+				assert.doesNotMatch(result.stderr, /review-|user|secret/);
+				assert.deepEqual(f.connections, { target: 0, proxy: 0 });
+				assert.equal(f.requests.length, 0);
+				assert.equal(f.targetRequests.length, 0);
+			});
+		}
+	}
 	for (const variable of ["ALL_PROXY", "all_proxy", `${targetProtocol}_proxy`]) {
 		test(`${variable} routes ${targetProtocol} targets`, async (t) => {
 			const f = await fixture(t, targetProtocol);
@@ -244,7 +326,11 @@ for (const targetProtocol of ["http", "https"]) {
 		["matching port", (f) => `127.0.0.1:${f.targetPort}`, true],
 		["different port", () => "127.0.0.1:1", false],
 		["suffix", () => ".0.0.1", true],
-		[`native leading-dot boundary on Node ${process.versions.node}`, () => ".7.0.0.1", !dotBoundary],
+		[
+			`native leading-dot boundary on Node ${process.versions.node}`,
+			() => ".7.0.0.1",
+			!dotBoundary,
+		],
 		["wildcard suffix", () => "*.0.0.1", true],
 		["unmatched", () => "example.invalid", false],
 		["comma-separated", () => "example.invalid,127.0.0.1", true],
@@ -419,7 +505,11 @@ test("lowercase proxy variables work in an isolated environment on every OS", as
 	assert.equal(f.requests.length, 1);
 });
 
-for (const proxy of ["http://127.0.0.1:1", "http://[invalid", "socks5://127.0.0.1:1"]) {
+for (const proxy of [
+	"http://127.0.0.1:1",
+	"http://[invalid",
+	"socks5://127.0.0.1:1",
+]) {
 	test(`bad proxy ${proxy} fails without direct fallback`, async (t) => {
 		const f = await fixture(t);
 		const result = await download(t, f.url, { HTTP_PROXY: proxy });
@@ -431,8 +521,16 @@ for (const proxy of ["http://127.0.0.1:1", "http://[invalid", "socks5://127.0.0.
 for (const targetProtocol of ["http", "https"]) {
 	test(`${targetProtocol} stalled TLS proxy handshake is bounded`, async (t) => {
 		const f = await fixture(t, targetProtocol);
-		const port = await listen(t, net.createServer(() => {}));
-		const result = await download(t, f.url, { ALL_PROXY: `https://127.0.0.1:${port}` }, { timeout: 100 });
+		const port = await listen(
+			t,
+			net.createServer(() => {}),
+		);
+		const result = await download(
+			t,
+			f.url,
+			{ ALL_PROXY: `https://127.0.0.1:${port}` },
+			{ timeout: 100 },
+		);
 		assert.equal(result.code, 1);
 		assert.match(result.stderr, /timed out after 100ms/);
 		assert.equal(f.targetRequests.length, 0);
@@ -443,7 +541,9 @@ for (const targetProtocol of ["http", "https"]) {
 		await new Promise((resolve) => unavailable.listen(0, "127.0.0.1", resolve));
 		const port = unavailable.address().port;
 		await new Promise((resolve) => unavailable.close(resolve));
-		const result = await download(t, f.url, { ALL_PROXY: `http://127.0.0.1:${port}` });
+		const result = await download(t, f.url, {
+			ALL_PROXY: `http://127.0.0.1:${port}`,
+		});
 		assert.equal(result.code, 1);
 		// Some local network sandboxes reset rather than refuse closed ports.
 		assert.match(result.stderr, /ECONNREFUSED|ECONNRESET/);
@@ -459,7 +559,12 @@ test("trickling CONNECT response cannot extend the deadline", async (t) => {
 		socket.on("close", () => clearInterval(interval));
 	});
 	const port = await listen(t, proxy);
-	const result = await download(t, f.url, { HTTPS_PROXY: `http://127.0.0.1:${port}` }, { timeout: 100 });
+	const result = await download(
+		t,
+		f.url,
+		{ HTTPS_PROXY: `http://127.0.0.1:${port}` },
+		{ timeout: 100 },
+	);
 	assert.equal(result.code, 1);
 	assert.match(result.stderr, /timed out after 100ms/);
 });
