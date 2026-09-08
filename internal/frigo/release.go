@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/roie/frigo/internal/atomicfile"
 	"github.com/roie/frigo/internal/git"
 	"github.com/roie/frigo/internal/ignore"
 	"github.com/roie/frigo/internal/registry"
@@ -38,7 +39,9 @@ func (w *Workspace) ReleaseAll(ctx context.Context, force bool) (registry.Releas
 	return result, err
 }
 
-func (w *Workspace) releaseLocked(ctx context.Context, rawPaths []string, force bool) (registry.ReleaseResult, error) {
+func (w *Workspace) releaseLocked(ctx context.Context, rawPaths []string, force bool) (out registry.ReleaseResult, outErr error) {
+	var publicationErr error
+	defer func() { outErr = errors.Join(publicationErr, outErr) }()
 	paths, err := w.normalizePaths(rawPaths, false)
 	if err != nil {
 		return registry.ReleaseResult{}, err
@@ -83,7 +86,7 @@ func (w *Workspace) releaseLocked(ctx context.Context, rawPaths []string, force 
 	rollback := func(cause error) (registry.ReleaseResult, error) {
 		restoreErr := saveRegistry(w.repo.RegistryPath, original)
 		var excludeErr error
-		if restoreErr == nil {
+		if restoreErr == nil || atomicfile.IsPublishedError(restoreErr) {
 			excludeErr = ignore.Sync(w.repo, original)
 		}
 		syncErr := testsync.Point(ctx, "release-rollback-complete")
@@ -95,10 +98,17 @@ func (w *Workspace) releaseLocked(ctx context.Context, rawPaths []string, force 
 		)
 	}
 	if err := saveRegistry(w.repo.RegistryPath, owned); err != nil {
-		return registry.ReleaseResult{}, fmt.Errorf("save frigo registry: %w", err)
+		err = fmt.Errorf("save frigo registry: %w", err)
+		if !atomicfile.IsPublishedError(err) {
+			return registry.ReleaseResult{}, err
+		}
+		publicationErr = errors.Join(publicationErr, err)
 	}
 	if err := ignore.Sync(w.repo, owned); err != nil {
-		return rollback(err)
+		if !atomicfile.IsPublishedError(err) {
+			return rollback(err)
+		}
+		publicationErr = errors.Join(publicationErr, err)
 	}
 	if w.repo.LinkedWorktree && len(owned.Paths) == 0 {
 		if err := w.releaseOwnedWorktreeLock(ctx); err != nil {

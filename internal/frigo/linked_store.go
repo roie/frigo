@@ -3,6 +3,7 @@ package frigo
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -63,7 +64,9 @@ func (w *Workspace) ensureLayout(ctx context.Context, allowCreate bool) error {
 	return w.initializeLinkedStore(ctx)
 }
 
-func (w *Workspace) initializeLinkedStore(ctx context.Context) error {
+func (w *Workspace) initializeLinkedStore(ctx context.Context) (outErr error) {
+	var publicationErr error
+	defer func() { outErr = errors.Join(publicationErr, outErr) }()
 	if !w.repo.LinkedWorktree {
 		return fmt.Errorf("stable linked-store initialization requires a linked worktree")
 	}
@@ -96,7 +99,11 @@ func (w *Workspace) initializeLinkedStore(ctx context.Context) error {
 			WorktreePath: w.repo.Root,
 		}
 		if err := saveManifestExclusive(filepath.Join(store, manifestName), manifest); err != nil {
-			return fmt.Errorf("save linked frigo manifest: %w", err)
+			err = fmt.Errorf("save linked frigo manifest: %w", err)
+			if !atomicfile.IsPublishedError(err) {
+				return err
+			}
+			publicationErr = errors.Join(publicationErr, err)
 		}
 		if err := w.linkedStoreBoundary("linked-store-manifest"); err != nil {
 			return err
@@ -105,10 +112,17 @@ func (w *Workspace) initializeLinkedStore(ctx context.Context) error {
 
 	w.repo = w.repo.WithFrigoDir(store)
 	if err := w.initializeHistory(ctx); err != nil {
-		return err
+		if !atomicfile.IsPublishedError(err) {
+			return err
+		}
+		publicationErr = errors.Join(publicationErr, err)
 	}
 	if err := savePointerExclusive(w.repo.WorktreeIDPath, manifest.ID); err != nil {
-		return fmt.Errorf("save linked frigo pointer: %w", err)
+		err = fmt.Errorf("save linked frigo pointer: %w", err)
+		if !atomicfile.IsPublishedError(err) {
+			return err
+		}
+		publicationErr = errors.Join(publicationErr, err)
 	}
 	if err := w.linkedStoreBoundary("linked-store-pointer"); err != nil {
 		return err
@@ -205,7 +219,9 @@ func (w *Workspace) initialize(ctx context.Context) error {
 	return w.initializeHistory(ctx)
 }
 
-func (w *Workspace) initializeHistory(ctx context.Context) error {
+func (w *Workspace) initializeHistory(ctx context.Context) (outErr error) {
+	var publicationErr error
+	defer func() { outErr = errors.Join(publicationErr, outErr) }()
 	if err := requireManagedDirectory(w.repo.FrigoDir); err != nil {
 		return fmt.Errorf("inspect frigo store: %w", err)
 	}
@@ -233,7 +249,11 @@ func (w *Workspace) initializeHistory(ctx context.Context) error {
 	}
 	written, err := ensureManagedFile(w.repo.AttributesPath, nil, 0o600, false)
 	if err != nil {
-		return fmt.Errorf("create empty frigo attributes file: %w", err)
+		err = fmt.Errorf("create empty frigo attributes file: %w", err)
+		if !atomicfile.IsPublishedError(err) {
+			return err
+		}
+		publicationErr = errors.Join(publicationErr, err)
 	}
 	if written {
 		if err := w.linkedStoreBoundary("linked-store-attributes"); err != nil {
@@ -245,7 +265,11 @@ func (w *Workspace) initializeHistory(ctx context.Context) error {
 	}
 	written, err = ensureManagedFile(w.repo.PrivateAttributesPath, []byte(privateAttributes), 0o600, true)
 	if err != nil {
-		return fmt.Errorf("initialize frigo private attributes: %w", err)
+		err = fmt.Errorf("initialize frigo private attributes: %w", err)
+		if !atomicfile.IsPublishedError(err) {
+			return err
+		}
+		publicationErr = errors.Join(publicationErr, err)
 	}
 	if written {
 		if err := w.linkedStoreBoundary("linked-store-private-attributes"); err != nil {
@@ -428,7 +452,7 @@ func ensureManagedFile(filename string, data []byte, mode os.FileMode, replace b
 	info, err := os.Lstat(filename)
 	if os.IsNotExist(err) {
 		if err := saveBytesExclusive(filename, data, mode); err != nil {
-			return false, err
+			return atomicfile.IsPublishedError(err), err
 		}
 		return true, nil
 	}
@@ -449,45 +473,30 @@ func ensureManagedFile(filename string, data []byte, mode os.FileMode, replace b
 		return false, nil
 	}
 	if err := atomicfile.Write(filename, data, mode); err != nil {
-		return false, err
+		return atomicfile.IsPublishedError(err), err
 	}
 	return true, nil
 }
 
 func saveManifestExclusive(filename string, manifest metadata.Manifest) error {
-	return saveExclusive(filename, func(temp string) error { return metadata.Save(temp, manifest) })
+	if err := requireManagedDirectory(filepath.Dir(filename)); err != nil {
+		return err
+	}
+	return metadata.Create(filename, manifest)
 }
 
 func savePointerExclusive(filename, id string) error {
-	return saveExclusive(filename, func(temp string) error { return metadata.SavePointer(temp, id) })
+	if err := requireManagedDirectory(filepath.Dir(filename)); err != nil {
+		return err
+	}
+	return metadata.CreatePointer(filename, id)
 }
 
 func saveBytesExclusive(filename string, data []byte, mode os.FileMode) error {
-	return saveExclusive(filename, func(temp string) error { return atomicfile.Write(temp, data, mode) })
-}
-
-func saveExclusive(filename string, writeTemp func(string) error) error {
-	parent := filepath.Dir(filename)
-	if err := requireManagedDirectory(parent); err != nil {
+	if err := requireManagedDirectory(filepath.Dir(filename)); err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(parent, ".frigo-exclusive-*")
-	if err != nil {
-		return err
-	}
-	tempName := temp.Name()
-	if err := temp.Close(); err != nil {
-		_ = os.Remove(tempName)
-		return err
-	}
-	defer os.Remove(tempName)
-	if err := writeTemp(tempName); err != nil {
-		return err
-	}
-	if err := os.Link(tempName, filename); err != nil {
-		return fmt.Errorf("create %s without replacement: %w", filename, err)
-	}
-	return nil
+	return atomicfile.Create(filename, data, mode)
 }
 
 func rejectSymlinksUnder(root string) error {

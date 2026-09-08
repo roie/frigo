@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/roie/frigo/internal/atomicfile"
 	"github.com/roie/frigo/internal/git"
 	"github.com/roie/frigo/internal/ignore"
 	"github.com/roie/frigo/internal/registry"
@@ -25,7 +26,7 @@ func (w *Workspace) Add(ctx context.Context, rawPaths []string) (registry.AddRes
 	return result, err
 }
 
-func (w *Workspace) addLocked(ctx context.Context, rawPaths []string) (registry.AddResult, error) {
+func (w *Workspace) addLocked(ctx context.Context, rawPaths []string) (out registry.AddResult, outErr error) {
 	paths, err := w.normalizePaths(rawPaths, true)
 	if err != nil {
 		return registry.AddResult{}, err
@@ -33,8 +34,13 @@ func (w *Workspace) addLocked(ctx context.Context, rawPaths []string) (registry.
 	if err := w.validateUTF8Descendants(paths); err != nil {
 		return registry.AddResult{}, err
 	}
+	var publicationErr error
+	defer func() { outErr = errors.Join(publicationErr, outErr) }()
 	if err := w.ensureLayout(ctx, true); err != nil {
-		return registry.AddResult{}, err
+		if !atomicfile.IsPublishedError(err) {
+			return registry.AddResult{}, err
+		}
+		publicationErr = err
 	}
 	if err := w.rejectMainTracked(ctx, paths); err != nil {
 		return registry.AddResult{}, err
@@ -58,7 +64,7 @@ func (w *Workspace) addLocked(ctx context.Context, rawPaths []string) (registry.
 	rollback := func(cause error) (registry.AddResult, error) {
 		rollbackErr := w.rollbackAdd(original, created)
 		var protectionErr error
-		if rollbackErr == nil && deactivateProtection && protectionActive {
+		if (rollbackErr == nil || atomicfile.IsPublishedError(rollbackErr)) && deactivateProtection && protectionActive {
 			protectionErr = w.releaseOwnedWorktreeLock(ctx)
 		}
 		return registry.AddResult{}, errors.Join(
@@ -69,7 +75,10 @@ func (w *Workspace) addLocked(ctx context.Context, rawPaths []string) (registry.
 	}
 	if created {
 		if err := w.initialize(ctx); err != nil {
-			return rollback(err)
+			if !atomicfile.IsPublishedError(err) {
+				return rollback(err)
+			}
+			publicationErr = errors.Join(publicationErr, err)
 		}
 	}
 	if w.repo.LinkedWorktree && len(owned.Paths) > 0 {
@@ -81,15 +90,25 @@ func (w *Workspace) addLocked(ctx context.Context, rawPaths []string) (registry.
 			return rollback(fmt.Errorf("linked frigo pointer is missing before registry activation"))
 		}
 		if _, err := w.ensureWorktreeProtection(ctx, id); err != nil {
-			return rollback(err)
+			if !atomicfile.IsPublishedError(err) {
+				return rollback(err)
+			}
+			publicationErr = errors.Join(publicationErr, err)
 		}
 		protectionActive = true
 	}
 	if err := saveRegistry(w.repo.RegistryPath, owned); err != nil {
-		return rollback(fmt.Errorf("save frigo registry: %w", err))
+		err = fmt.Errorf("save frigo registry: %w", err)
+		if !atomicfile.IsPublishedError(err) {
+			return rollback(err)
+		}
+		publicationErr = errors.Join(publicationErr, err)
 	}
 	if err := ignore.Sync(w.repo, owned); err != nil {
-		return rollback(err)
+		if !atomicfile.IsPublishedError(err) {
+			return rollback(err)
+		}
+		publicationErr = errors.Join(publicationErr, err)
 	}
 	if err := w.validateMainSeparation(ctx, owned.Paths); err != nil {
 		return rollback(err)
@@ -182,10 +201,11 @@ func (w *Workspace) rollbackAdd(original registry.Registry, created bool) error 
 		rollbackErr = errors.Join(rollbackErr, ignore.Sync(w.repo, registry.New()))
 		return rollbackErr
 	}
-	if err := registry.Save(w.repo.RegistryPath, original); err != nil {
-		return fmt.Errorf("restore frigo registry: %w", err)
+	restoreErr := wrapOptional("restore frigo registry", registry.Save(w.repo.RegistryPath, original))
+	if restoreErr != nil && !atomicfile.IsPublishedError(restoreErr) {
+		return restoreErr
 	}
-	return ignore.Sync(w.repo, original)
+	return errors.Join(restoreErr, ignore.Sync(w.repo, original))
 }
 
 func (w *Workspace) validateMainSeparation(ctx context.Context, paths []string) error {

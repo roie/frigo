@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/roie/frigo/internal/atomicfile"
 	"github.com/roie/frigo/internal/metadata"
 	"github.com/roie/frigo/internal/testsync"
 )
@@ -106,6 +107,9 @@ func (w *Workspace) ensureWorktreeProtection(ctx context.Context, id string) (bo
 		return true, nil
 	}
 	if err := w.persistLockOwnership(manifest, true, "worktree-lock-before-owned-save", "worktree-lock-owned-save"); err != nil {
+		if atomicfile.IsPublishedError(err) {
+			return true, err
+		}
 		rollbackErr := w.undoNewWorktreeLock(ctx, id, expected)
 		return false, errors.Join(
 			fmt.Errorf("persist lifecycle lock ownership: %w", err),
@@ -157,6 +161,9 @@ func (w *Workspace) releaseOwnedWorktreeLock(ctx context.Context) error {
 			fmt.Errorf("worktree unlock postcondition failed; lock remains with reason %q", lock.reason))
 	}
 	if err := w.persistLockOwnership(manifest, false, "worktree-unlock-before-owned-save", "worktree-unlock-owned-save"); err != nil {
+		if atomicfile.IsPublishedError(err) {
+			return err
+		}
 		return w.compensateUnlockFailure(ctx, id, expected,
 			fmt.Errorf("persist cleared lifecycle lock ownership: %w", err))
 	}
@@ -192,7 +199,9 @@ func (w *Workspace) proveLinkedAssociation(ctx context.Context, id string) (meta
 	return manifest, nil
 }
 
-func (w *Workspace) persistLockOwnership(manifest metadata.Manifest, owned bool, beforeBoundary, afterBoundary string) error {
+func (w *Workspace) persistLockOwnership(manifest metadata.Manifest, owned bool, beforeBoundary, afterBoundary string) (outErr error) {
+	var publicationErr error
+	defer func() { outErr = errors.Join(publicationErr, outErr) }()
 	if err := w.lifecycleBoundary(beforeBoundary); err != nil {
 		return err
 	}
@@ -202,7 +211,10 @@ func (w *Workspace) persistLockOwnership(manifest metadata.Manifest, owned bool,
 		return err
 	}
 	if err := metadata.Save(filename, manifest); err != nil {
-		return err
+		if !atomicfile.IsPublishedError(err) {
+			return err
+		}
+		publicationErr = err
 	}
 	if err := w.lifecycleBoundary(afterBoundary); err != nil {
 		return err

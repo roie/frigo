@@ -11,6 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/roie/frigo/internal/atomicfile"
 	"github.com/roie/frigo/internal/ignore"
 	"github.com/roie/frigo/internal/lockfile"
 	"github.com/roie/frigo/internal/metadata"
@@ -719,7 +720,14 @@ func buildDoctorPlan(issues []DoctorIssue) []DoctorAction {
 	return actions
 }
 
-func (w *Workspace) applyDoctorAction(ctx context.Context, action DoctorAction) (bool, error) {
+func (w *Workspace) applyDoctorAction(ctx context.Context, action DoctorAction) (changed bool, outErr error) {
+	// A published repair is applied even when its final housekeeping reports an
+	// error. Doctor still stops and rediagnoses rather than hiding that error.
+	defer func() {
+		if atomicfile.IsPublishedError(outErr) {
+			changed = true
+		}
+	}()
 	state := w.diagnoseDoctorLocked(ctx)
 	if !state.hasRepairableAction(action) {
 		return false, nil
