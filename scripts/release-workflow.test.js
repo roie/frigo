@@ -285,16 +285,13 @@ test("installed launcher bytes are checked before publication on every supported
 	);
 });
 
-test("npm runtime declares native ESM and current dependencies", () => {
+test("npm runtime declares native ESM without runtime dependencies", () => {
 	const manifest = JSON.parse(
 		fs.readFileSync(path.join(__dirname, "../npm/package.json.tmpl"), "utf8"),
 	);
 	assert.equal(manifest.type, "module");
 	assert.equal(manifest.engines.node, ">=24.11.0");
-	assert.deepEqual(manifest.dependencies, {
-		"proxy-from-env": "^2.1.0",
-		"https-proxy-agent": "^9.1.0",
-	});
+	assert.deepEqual(manifest.dependencies ?? {}, {});
 	for (const filename of ["frigo.js", "install.js"]) {
 		const source = fs.readFileSync(
 			path.join(__dirname, "../npm/bin", filename),

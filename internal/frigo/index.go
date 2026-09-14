@@ -1,12 +1,14 @@
 package frigo
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/roie/frigo/internal/git"
 )
@@ -56,6 +58,21 @@ func (w *Workspace) withTemporaryIndexAt(ctx context.Context, base historyBase, 
 		}
 	}
 	return fn(client)
+}
+
+// Check the actual staged tree, including inherited entries and files created
+// after preflight. A filesystem scan alone cannot protect newly saved history.
+func (w *Workspace) validateIndexUTF8Paths(ctx context.Context, client git.Client) error {
+	paths, err := w.privateOutputBytes(ctx, client, "ls-files", "--cached", "-z")
+	if err != nil {
+		return fmt.Errorf("inspect staged frigo paths: %w", err)
+	}
+	for path := range bytes.SplitSeq(paths, []byte{0}) {
+		if !utf8.Valid(path) {
+			return fmt.Errorf("%q is not a valid UTF-8 path", path)
+		}
+	}
+	return nil
 }
 
 func (w *Workspace) comparisonOID(ctx context.Context, base historyBase) (string, error) {

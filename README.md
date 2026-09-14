@@ -53,6 +53,31 @@ Supported platforms:
 - Linux, macOS, and Windows
 - amd64 and arm64
 
+### Download proxies
+
+The npm launcher downloads and verifies the native binary on first use, then
+reuses its verified cache. The package has no runtime dependencies or install
+hooks. Downloads use Node's native HTTP/HTTPS proxy agents without requiring
+`NODE_USE_ENV_PROXY` or Node flags.
+
+Set `HTTP_PROXY` for HTTP targets or `HTTPS_PROXY` for HTTPS targets; `ALL_PROXY`
+is the fallback for either. Nonempty lowercase variants take precedence over
+uppercase, and protocol-specific settings take precedence over `ALL_PROXY`.
+Proxy URLs support HTTP/HTTPS and URL-encoded credentials. A URL without a scheme
+uses the target's protocol. Windows environment names are case-insensitive.
+`npm_config_*` proxy variables are not used.
+
+`NO_PROXY` (or nonempty `no_proxy`) is matched by the installed Node version:
+comma-separated exact hosts, host:port, `*`, `.example.com`, `*.example.com`, and
+IP ranges such as `192.168.1.1-192.168.1.100`. Unlike the previous proxy library,
+spaces do not separate entries, bare `*suffix` and suffix:port patterns are not
+supported, and `.example.com` includes the apex `example.com`. Native behavior
+has a version boundary: Node 24.11–24.15, 25.x, and 26.0 match leading-dot
+suffixes without a dot boundary (so `.example.com` also bypasses
+`notexample.com`); Node 24.16+ and 26.1+ require the domain boundary. Prefer exact
+hosts or `*.example.com` for consistent behavior across these versions. TLS
+certificate verification remains enabled for both proxy and target.
+
 ## Quick start
 
 Add a file to frigo:

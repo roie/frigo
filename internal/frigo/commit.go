@@ -70,6 +70,10 @@ func (w *Workspace) commitLocked(ctx context.Context, options CommitOptions) (Co
 			}
 		}
 
+		if err := w.validateIndexUTF8Paths(ctx, client); err != nil {
+			return err
+		}
+
 		_, diffErr := w.privateOutput(ctx, client, "diff", "--cached", "--quiet", "--exit-code")
 		if diffErr == nil {
 			result = CommitResult{Committed: false}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"strings"
 	"unicode/utf8"
@@ -67,6 +68,15 @@ func Load(filename string) (Manifest, error) {
 
 // Save writes a manifest to filename atomically.
 func Save(filename string, manifest Manifest) error {
+	return save(filename, manifest, atomicfile.Write)
+}
+
+// Create saves a manifest without replacing an existing destination.
+func Create(filename string, manifest Manifest) error {
+	return save(filename, manifest, atomicfile.Create)
+}
+
+func save(filename string, manifest Manifest, publish func(string, []byte, fs.FileMode) error) error {
 	if manifest.Version == 0 {
 		manifest.Version = CurrentVersion
 	}
@@ -79,7 +89,7 @@ func Save(filename string, manifest Manifest) error {
 		return fmt.Errorf("encode manifest: %w", err)
 	}
 	data = append(data, '\n')
-	return atomicfile.Write(filename, data, 0o600)
+	return publish(filename, data, 0o600)
 }
 
 // LoadPointer reads a stable frigo pointer file.
@@ -104,10 +114,19 @@ func LoadPointer(filename string) (string, error) {
 
 // SavePointer writes a pointer file containing the ID and one terminal newline.
 func SavePointer(filename, id string) error {
+	return savePointer(filename, id, atomicfile.Write)
+}
+
+// CreatePointer saves a pointer without replacing an existing destination.
+func CreatePointer(filename, id string) error {
+	return savePointer(filename, id, atomicfile.Create)
+}
+
+func savePointer(filename, id string, publish func(string, []byte, fs.FileMode) error) error {
 	if err := validateID(id); err != nil {
 		return err
 	}
-	return atomicfile.Write(filename, append([]byte(id), '\n'), 0o600)
+	return publish(filename, append([]byte(id), '\n'), 0o600)
 }
 
 func (m Manifest) validate() error {
