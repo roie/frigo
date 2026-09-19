@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/roie/frigo/internal/testexec"
@@ -40,6 +41,23 @@ func TestDiffPatchIncludesAdditionsAndDirectoryDeletions(t *testing.T) {
 			}
 			assertNoTemporaryIndexes(t, ws)
 		})
+	}
+}
+
+func TestHumanDiffIncludesDirectoryDeletions(t *testing.T) {
+	ws, root := workspaceWithOwnership(t, "docs")
+	testrepo.Write(t, root, "docs/deleted", "old\n")
+	testrepo.Write(t, root, "docs/sibling", "keep\n")
+	saveForTest(t, ws, "save directory")
+	if err := os.Remove(filepath.Join(root, "docs/deleted")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ws.Diff(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "deleted file mode 100644") || !strings.Contains(got, "-old") {
+		t.Fatalf("Diff() = %q, want directory deletion", got)
 	}
 }
 

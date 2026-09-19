@@ -30,8 +30,12 @@ func (w *Workspace) DiffPatch(ctx context.Context, rawPaths []string) ([]byte, e
 
 func (w *Workspace) diffLocked(ctx context.Context, rawPaths []string) (string, error) {
 	var output string
-	err := w.withDiffComparison(ctx, rawPaths, func(client git.Client, _ historyBase, paths []string) error {
-		args := append([]string{"diff", "--no-ext-diff", "--ita-visible-in-index", "--"}, paths...)
+	err := w.withDiffComparison(ctx, rawPaths, func(client git.Client, base historyBase, paths []string) error {
+		oid, err := w.comparisonOID(ctx, base)
+		if err != nil {
+			return err
+		}
+		args := append([]string{"diff", "--no-ext-diff", "--ita-visible-in-index", oid, "--"}, paths...)
 		result, err := w.privateOutput(ctx, client, args...)
 		if err != nil {
 			return fmt.Errorf("read frigo diff: %w", err)
