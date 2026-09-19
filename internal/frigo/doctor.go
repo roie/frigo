@@ -163,6 +163,7 @@ func (w *Workspace) diagnoseDoctorLocked(ctx context.Context) doctorState {
 		state.selectMainDoctorStore()
 	}
 	if state.selected == nil {
+		w.inspectOtherDoctorStores(ctx, &state)
 		return state
 	}
 
@@ -172,7 +173,38 @@ func (w *Workspace) diagnoseDoctorLocked(ctx context.Context) doctorState {
 	if w.repo.LinkedWorktree && incomplete {
 		state.add("stable-initialization-incomplete", state.selected.path, "stable store initialization is incomplete", false)
 	}
+	w.inspectOtherDoctorStores(ctx, &state)
 	return state
+}
+
+func (w *Workspace) inspectOtherDoctorStores(ctx context.Context, state *doctorState) {
+	for _, store := range state.stores {
+		if !store.valid || (state.selected != nil && store.path == state.selected.path) {
+			continue
+		}
+		evidence := state.pointerEvidence[store.id]
+		if len(evidence) != 1 || !evidence[0].live || evidence[0].checkoutRoot != store.manifest.WorktreePath {
+			continue
+		}
+		storeRepo, err := repository.Discover(ctx, w.git, evidence[0].checkoutRoot)
+		if err != nil {
+			state.add("metadata-malformed", store.path, fmt.Sprintf("discover associated worktree: %v", err), false)
+			continue
+		}
+		storeRepo = storeRepo.WithFrigoDir(store.path)
+		storeState := *state
+		storeState.repo = storeRepo
+		storeState.selected = &store
+		storeState.registry = registry.Registry{}
+		storeState.hasRegistry = false
+		storeState.issues = nil
+		storeWorkspace := NewWorkspace(storeRepo, w.git, storeRepo.Root)
+		incomplete := storeState.inspectSelectedStore(ctx, storeWorkspace)
+		state.issues = append(state.issues, storeState.issues...)
+		if incomplete {
+			state.add("stable-initialization-incomplete", store.path, "stable store initialization is incomplete", false)
+		}
+	}
 }
 
 func (w *Workspace) inspectDoctorStores(state *doctorState) []doctorStore {

@@ -34,6 +34,48 @@ func TestDoctorHealthyMainAndLinkedState(t *testing.T) {
 	}
 }
 
+func TestDoctorFromMainDiagnosesLinkedStoreExclusions(t *testing.T) {
+	ws, mainRoot, linkedRoot := newLinkedWorkspace(t)
+	testrepo.Write(t, linkedRoot, "local.txt", "linked\n")
+	if _, err := ws.Add(context.Background(), []string{"local.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ws.repo.ExcludePath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mainRepo, err := repository.Discover(context.Background(), gitpkg.Client{Path: "git"}, mainRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mainWS := NewWorkspace(mainRepo, gitpkg.Client{Path: "git"}, mainRoot)
+	result, err := mainWS.Doctor(context.Background(), DoctorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDoctorIssue(t, result, "exclusions-stale", mainWS.repo.ExcludePath, true)
+}
+
+func TestDoctorFromMainDiagnosesLinkedStoreLifecycleLock(t *testing.T) {
+	ws, mainRoot, linkedRoot := newLinkedWorkspace(t)
+	testrepo.Write(t, linkedRoot, "local.txt", "linked\n")
+	if _, err := ws.Add(context.Background(), []string{"local.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(ws.repo.GitDir, "locked")); err != nil {
+		t.Fatal(err)
+	}
+	mainRepo, err := repository.Discover(context.Background(), gitpkg.Client{Path: "git"}, mainRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mainWS := NewWorkspace(mainRepo, gitpkg.Client{Path: "git"}, mainRoot)
+	result, err := mainWS.Doctor(context.Background(), DoctorOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDoctorIssue(t, result, "lifecycle-lock-missing", filepath.Join(ws.repo.GitDir, "locked"), true)
+}
+
 func TestDoctorDiagnosesOrphanStableStore(t *testing.T) {
 	ws := newDoctorWorkspace(t, true)
 	id := strings.Repeat("e", 32)
