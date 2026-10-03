@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/roie/frigo/internal/atomicfile"
@@ -33,7 +34,11 @@ func (w *Workspace) ReleaseAll(ctx context.Context, force bool) (registry.Releas
 		if len(owned.Paths) == 0 {
 			return nil
 		}
-		result, err = w.releaseLocked(ctx, append([]string(nil), owned.Paths...), force)
+		rootPaths := make([]string, len(owned.Paths))
+		for i, ownedPath := range owned.Paths {
+			rootPaths[i] = filepath.Join(w.repo.Root, filepath.FromSlash(ownedPath))
+		}
+		result, err = w.releaseLocked(ctx, rootPaths, force)
 		return err
 	})
 	return result, err

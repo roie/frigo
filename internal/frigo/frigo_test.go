@@ -1618,6 +1618,29 @@ func TestReleaseAllPreflightsEveryOwnedRootBeforeMutating(t *testing.T) {
 	assertNoTemporaryIndexes(t, ws)
 }
 
+func TestReleaseAllFromNestedDirectory(t *testing.T) {
+	ws, root := newWorkspace(t)
+	ownForTest(t, ws, "PLAN.md")
+	syncIgnoreForTest(t, ws)
+	testrepo.Write(t, root, "PLAN.md", "saved\n")
+	saveForTest(t, ws, "save owned file")
+	nested := filepath.Join(root, "docs")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nestedWS := NewWorkspace(ws.repo, ws.git, nested)
+	if _, err := nestedWS.ReleaseAll(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	owned, err := registry.Load(ws.repo.RegistryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(owned.Paths) != 0 {
+		t.Fatalf("registry paths = %v, want empty", owned.Paths)
+	}
+}
+
 func TestReleaseAllReleasesCurrentWorktreeOnlyAndKeepsPointerManifestHistory(t *testing.T) {
 	ws, mainRoot, linkedRoot := newLinkedWorkspace(t)
 	mainRepo, err := repository.Discover(context.Background(), gitpkg.Client{Path: "git"}, mainRoot)

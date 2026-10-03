@@ -480,8 +480,6 @@ async function ensureBinary(options = {}) {
 		if (platform !== "win32") await fsp.chmod(destination, 0o755);
 		return destination;
 	}
-	await fsp.rm(destination, { force: true });
-
 	const lockPath = path.join(targetDirectory, `.${binaryName}.lock`);
 	const releaseLock = await acquireLock(lockPath);
 	try {

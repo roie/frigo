@@ -199,7 +199,7 @@ test("CI uses least privilege and non-persisted checkout credentials", () => {
 	const nonPersistentCount = (
 		ciWorkflow.match(/persist-credentials: false/g) || []
 	).length;
-	assert.equal(checkoutCount, 2);
+	assert.equal(checkoutCount, 3);
 	assert.equal(nonPersistentCount, checkoutCount);
 });
 
