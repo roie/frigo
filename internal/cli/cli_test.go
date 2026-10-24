@@ -926,6 +926,33 @@ func TestStatusDiffCommitLogRestoreReleaseAndLs(t *testing.T) {
 	}
 }
 
+func TestMovedLinkedWorktreeStaysExcludedAfterSyncFromMainWorktree(t *testing.T) {
+	root := testrepo.Init(t)
+	testrepo.Write(t, root, "README.md", "main\n")
+	testrepo.CommitAll(t, root, "initial", "README.md")
+	parent := t.TempDir()
+	linked := filepath.Join(parent, "linked")
+	testrepo.Run(t, root, "worktree", "add", "-q", "-b", "moved", linked)
+	testrepo.Write(t, linked, "NOTES.md", "notes\n")
+	if got := invoke(t, linked, "add", "NOTES.md"); got.code != 0 {
+		t.Fatalf("add in linked worktree: %+v", got)
+	}
+
+	moved := filepath.Join(parent, "moved")
+	if err := os.Rename(linked, moved); err != nil {
+		t.Fatal(err)
+	}
+	testrepo.Run(t, root, "worktree", "repair", moved)
+
+	testrepo.Write(t, root, "PLAN.md", "plan\n")
+	if got := invoke(t, root, "add", "PLAN.md"); got.code != 0 {
+		t.Fatalf("add in main worktree: %+v", got)
+	}
+	if status := testrepo.Output(t, moved, "status", "--porcelain", "--untracked-files=all"); strings.Contains(status, "NOTES.md") {
+		t.Fatalf("moved worktree exposes frigo-owned file to main Git:\n%s", status)
+	}
+}
+
 func invoke(t *testing.T, root string, args ...string) result {
 	t.Helper()
 	cwdMu.Lock()

@@ -278,7 +278,9 @@ func liveLinkedRegistryPaths(repo repository.Repository) ([]string, error) {
 			continue
 		}
 		manifest, err := metadata.Load(manifestPath)
-		if err != nil || manifest.ID != id || manifest.WorktreePath != checkoutRoot {
+		// A stale manifest worktreePath means the checkout moved; its owned paths
+		// must stay excluded until the association is resolved.
+		if err != nil || manifest.ID != id {
 			continue
 		}
 		registryPath := filepath.Join(store, "registry.json")
