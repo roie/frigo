@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
@@ -130,6 +131,33 @@ test("lock release does not remove a replacement lock", async (t) => {
 	fs.writeFileSync(lockPath, "replacement-owner\n");
 	await release();
 	assert.equal(fs.readFileSync(lockPath, "utf8"), "replacement-owner\n");
+});
+
+test("lock is released when the holder is interrupted", { skip: process.platform === "win32" }, async (t) => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "frigo-signal-lock-test-"));
+	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+	const lockPath = path.join(root, "binary.lock");
+	const installUrl = pathToFileURL(
+		path.join(process.env.FRIGO_TEST_PACKAGE_ROOT, "bin/install.js"),
+	).href;
+	const child = spawn(
+		process.execPath,
+		[
+			"--input-type=module",
+			"-e",
+			`const { acquireLock } = await import(${JSON.stringify(installUrl)});
+			await acquireLock(${JSON.stringify(lockPath)});
+			process.stdout.write("locked\\n");
+			setInterval(() => {}, 1000);`,
+		],
+		{ stdio: ["ignore", "pipe", "inherit"] },
+	);
+	t.after(() => child.kill("SIGKILL"));
+	await new Promise((resolve) => child.stdout.once("data", resolve));
+	const exited = new Promise((resolve) => child.once("exit", (_code, signal) => resolve(signal)));
+	child.kill("SIGINT");
+	assert.equal(await exited, "SIGINT");
+	assert.equal(fs.existsSync(lockPath), false);
 });
 
 async function listen(t, server) {
