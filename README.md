@@ -559,6 +559,21 @@ Repository ignore rules can conflict with frigo's local rules. frigo validates m
 
 Review the main repository's staged diff before committing sensitive files.
 
+### Git cleanup commands can remove frigo files
+
+frigo hides managed files from the main repository with local ignore rules, so Git treats them as ignored files.
+
+Commands that act on ignored files act on frigo files too:
+
+- `git clean -x` or `git clean -X` deletes them;
+- `git stash --all` moves them into the stash.
+
+frigo history is stored in Git metadata, so these commands do not remove it. After `git clean`, run `frigo restore` to recover the committed version. Uncommitted changes deleted by `git clean` are lost.
+
+After `git stash --all`, use `git stash apply` to recover stashed files, including uncommitted changes. Apply the stash before `frigo restore` to avoid conflicts with restored files.
+
+Commit to frigo before you run these commands.
+
 ### UTF-8 and U+FFFD
 
 frigo rejects invalid UTF-8 path bytes before metadata changes. It also rejects raw registry bytes that are not valid UTF-8 before decoding JSON.
