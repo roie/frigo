@@ -780,6 +780,110 @@ func TestDoctorRepairLeavesDestructiveAmbiguousAndForeignStateUntouched(t *testi
 	}
 }
 
+func TestDoctorRepairRecordsProvenMovedLinkedWorktree(t *testing.T) {
+	ws, manifestPath := moveDoctorLinkedWorktree(t)
+	if _, err := ws.List(context.Background(), nil); err == nil {
+		t.Fatal("List() succeeded before the moved worktree was repaired")
+	}
+	assertDoctorIssue(t, diagnoseDoctor(t, ws), "association-worktree-mismatch", manifestPath, true)
+
+	result, err := ws.Doctor(context.Background(), DoctorOptions{Repair: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Applied) != 1 || result.Applied[0].Code != "association-worktree-mismatch" {
+		t.Fatalf("applied = %#v, want moved worktree repair", result.Applied)
+	}
+	if len(result.Issues) != 0 {
+		t.Fatalf("post-repair issues = %#v, want none", result.Issues)
+	}
+	manifest, err := metadata.Load(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.WorktreePath != ws.repo.Root || !manifest.LockOwned {
+		t.Fatalf("manifest = %#v, want moved path with preserved lock ownership", manifest)
+	}
+	if paths, err := ws.List(context.Background(), nil); err != nil || !slices.Equal(paths, []string{"private.txt"}) {
+		t.Fatalf("List() = %q, %v, want private.txt", paths, err)
+	}
+}
+
+func TestDoctorRepairDoesNotRecordAmbiguousMovedLinkedWorktree(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(t *testing.T, ws *Workspace, id string)
+	}{
+		{name: "another store claims the new path", mutate: func(t *testing.T, ws *Workspace, _ string) {
+			other := strings.Repeat("f", 32)
+			if err := metadata.Save(filepath.Join(ws.repo.LinkedStoresDir, other, manifestName), metadata.Manifest{
+				Version: metadata.CurrentVersion, ID: other, WorktreePath: ws.repo.Root,
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "another admin pointer names the store", mutate: func(t *testing.T, ws *Workspace, id string) {
+			second := filepath.Join(filepath.Dir(ws.repo.Root), filepath.Base(ws.repo.Root)+"-second")
+			testrepo.Run(t, ws.repo.Root, "worktree", "add", "-q", "-b", "second-branch", second)
+			t.Cleanup(func() { _ = os.RemoveAll(second) })
+			secondRepo, err := repository.Discover(context.Background(), gitpkg.Client{Path: "git"}, second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := metadata.SavePointer(secondRepo.WorktreeIDPath, id); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ws, manifestPath := moveDoctorLinkedWorktree(t)
+			id, err := metadata.LoadPointer(ws.repo.WorktreeIDPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tt.mutate(t, ws, id)
+			before, err := os.ReadFile(manifestPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			result, err := ws.Doctor(context.Background(), DoctorOptions{Repair: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, action := range result.Applied {
+				if action.Code == "association-worktree-mismatch" {
+					t.Fatalf("applied ambiguous moved worktree repair: %#v", result.Applied)
+				}
+			}
+			assertDoctorIssue(t, result, "association-worktree-mismatch", manifestPath, false)
+			if after, err := os.ReadFile(manifestPath); err != nil || !bytes.Equal(after, before) {
+				t.Fatalf("manifest changed: %q, %v", after, err)
+			}
+		})
+	}
+}
+
+func moveDoctorLinkedWorktree(t *testing.T) (*Workspace, string) {
+	t.Helper()
+	ws := newDoctorWorkspace(t, true)
+	id, err := metadata.LoadPointer(ws.repo.WorktreeIDPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := ws.repo.Root + "-moved"
+	if err := os.Rename(ws.repo.Root, moved); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(moved) })
+	testrepo.Run(t, moved, "worktree", "repair")
+	repo, err := repository.Discover(context.Background(), gitpkg.Client{Path: "git"}, moved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return NewWorkspace(repo, gitpkg.Client{Path: "git"}, moved), filepath.Join(repo.LinkedStoresDir, id, manifestName)
+}
+
 func TestDoctorIssuesAreSortedByCodeThenPath(t *testing.T) {
 	ws := newDoctorWorkspace(t, false)
 	if err := os.Remove(ws.repo.AttributesPath); err != nil {

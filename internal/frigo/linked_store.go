@@ -192,7 +192,7 @@ func (w *Workspace) selectLinkedStore(id string) error {
 		return fmt.Errorf("linked frigo pointer ID %s disagrees with manifest ID %s", id, manifest.ID)
 	}
 	if manifest.WorktreePath != w.repo.Root {
-		return fmt.Errorf("linked frigo manifest worktree path %q disagrees with current worktree %q", manifest.WorktreePath, w.repo.Root)
+		return fmt.Errorf("linked frigo manifest worktree path %q disagrees with current worktree %q; if this worktree moved, run git worktree repair, then frigo doctor --repair", manifest.WorktreePath, w.repo.Root)
 	}
 	w.repo = w.repo.WithFrigoDir(store)
 	return nil

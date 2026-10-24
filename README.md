@@ -537,6 +537,23 @@ Frigo-owned lifecycle locks are a practical boundary, not a security boundary.
 - `git worktree remove --force` still respects Frigo's owned lifecycle lock;
 - `git worktree remove --force --force` can remove a locked worktree, so the shared history remains the recovery point.
 
+### Moving a linked worktree
+
+Frigo's lifecycle lock also blocks `git worktree move`. To move a linked worktree, move its directory, then reconnect it.
+
+Do not run Frigo commands in other worktrees between the directory move and `git worktree repair`. An exclusion update during this interval can expose managed files to ordinary Git staging.
+
+```bash
+mv ../feature ../feature-moved
+cd ../feature-moved
+git worktree repair
+frigo doctor --repair
+```
+
+`frigo doctor --repair` records the new location only when Git's worktree administration and Frigo's pointer agree on it. Until Frigo records the new location, ordinary Frigo commands in the moved worktree fail. After `git worktree repair`, exclusion updates retain the moved worktree's managed paths.
+
+If the first Frigo repair reports `exclusions-stale`, run `frigo doctor --repair` again to restore the exclusions. Do not stage files with Git until doctor reports `ok`.
+
 ### frigo history is local
 
 frigo history belongs to the current repository clone.
