@@ -536,6 +536,7 @@ Frigo-owned lifecycle locks are a practical boundary, not a security boundary.
 - ordinary `git worktree remove` is blocked when Git considers the worktree unsafe to remove;
 - `git worktree remove --force` still respects Frigo's owned lifecycle lock;
 - `git worktree remove --force --force` can remove a locked worktree, so the shared history remains the recovery point.
+- `git worktree unlock` removes the protection. Git treats frigo-managed files as ignored, so a later plain `git worktree remove` deletes them, including uncommitted changes. `frigo doctor` reports the missing lock, and `frigo doctor --repair` restores it.
 
 ### Moving a linked worktree
 
