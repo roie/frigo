@@ -68,6 +68,7 @@ type doctorState struct {
 	hasRegistry     bool
 	stores          []doctorStore
 	pointerEvidence map[string][]doctorPointerEvidence
+	actionRepos     map[string]repository.Repository
 	issues          []DoctorIssue
 }
 
@@ -142,7 +143,7 @@ func (w *Workspace) rerunDoctorDiagnosisLocked(ctx context.Context) ([]DoctorIss
 }
 
 func (w *Workspace) diagnoseDoctorLocked(ctx context.Context) doctorState {
-	state := doctorState{repo: w.repo}
+	state := doctorState{repo: w.repo, actionRepos: make(map[string]repository.Repository)}
 	w.inspectUnsupportedLinkedState(&state)
 
 	state.stores = w.inspectDoctorStores(&state)
@@ -688,6 +689,11 @@ func (state *doctorState) add(code, path, message string, repairable bool) {
 			return
 		}
 	}
+	if repairable {
+		if _, exists := state.actionRepos[path]; !exists {
+			state.actionRepos[path] = state.repo
+		}
+	}
 	state.issues = append(state.issues, DoctorIssue{Code: code, Path: path, Message: message, Repairable: repairable})
 }
 
@@ -772,6 +778,15 @@ func (w *Workspace) applyDoctorAction(ctx context.Context, action DoctorAction) 
 	state := w.diagnoseDoctorLocked(ctx)
 	if !state.hasRepairableAction(action) {
 		return false, nil
+	}
+	if repo, ok := state.actionRepos[action.Path]; ok && repo != state.repo {
+		target := *w
+		target.repo = repo
+		w = &target
+		state = w.diagnoseDoctorLocked(ctx)
+		if !state.hasRepairableAction(action) {
+			return false, nil
+		}
 	}
 	if w.doctorActionHook != nil {
 		if err := w.doctorActionHook(action.Code); err != nil {
