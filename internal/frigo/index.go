@@ -79,21 +79,11 @@ func (w *Workspace) comparisonOID(ctx context.Context, base historyBase) (string
 	if base.Exists {
 		return base.OID, nil
 	}
-	oid, err := w.git.WithEnv("GIT_ATTR_NOSYSTEM=1").OutputWithInput(
-		ctx,
-		w.repo.Root,
-		"",
-		"--git-dir="+w.repo.HistoryDir,
-		"--work-tree="+w.repo.Root,
-		"hash-object",
-		"-t",
-		"tree",
-		"--stdin",
-	)
+	oid, err := w.privateOutputBytesWithInput(ctx, w.git, nil, "hash-object", "-t", "tree", "--stdin")
 	if err != nil {
 		return "", fmt.Errorf("resolve empty frigo history base: %w", err)
 	}
-	return oid, nil
+	return strings.TrimSpace(string(oid)), nil
 }
 
 func (w *Workspace) historicalComparisonOID(ctx context.Context, commitOID string) (string, error) {
@@ -118,7 +108,7 @@ func (w *Workspace) statusAtOID(ctx context.Context, client git.Client, oid stri
 	var output string
 	err := w.withPinnedStatus(oid, func(commandArgs []string) error {
 		var err error
-		output, err = client.Output(ctx, w.repo.Root, append(commandArgs, args...)...)
+		output, err = w.privateOutput(ctx, client, append(commandArgs, args...)...)
 		return err
 	})
 	if err != nil {
@@ -131,7 +121,7 @@ func (w *Workspace) statusAtOIDBytes(ctx context.Context, client git.Client, oid
 	var output []byte
 	err := w.withPinnedStatus(oid, func(commandArgs []string) error {
 		var err error
-		output, err = client.OutputBytes(ctx, w.repo.Root, append(commandArgs, args...)...)
+		output, err = w.privateOutputBytes(ctx, client, append(commandArgs, args...)...)
 		return err
 	})
 	if err != nil {
@@ -159,7 +149,7 @@ func (w *Workspace) withPinnedStatus(oid string, run func(commandArgs []string) 
 			return fmt.Errorf("write pinned frigo %s: %w", filename, err)
 		}
 	}
-	return run([]string{"--git-dir=" + gitDir, "--work-tree=" + w.repo.Root, "-c", "core.fsmonitor="})
+	return run([]string{"--git-dir=" + gitDir})
 }
 
 func (w *Workspace) resolveHistoryBase(ctx context.Context) (historyBase, error) {

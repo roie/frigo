@@ -595,8 +595,6 @@ func (state *doctorState) validHistory(ctx context.Context, w *Workspace) bool {
 		return false
 	}
 	for _, config := range [][2]string{
-		{"core.hooksPath", state.repo.HooksDir},
-		{"core.attributesFile", state.repo.AttributesPath},
 		{"core.autocrlf", "false"},
 		{"commit.gpgSign", "false"},
 	} {

@@ -278,8 +278,6 @@ func (w *Workspace) initializeHistory(ctx context.Context) (outErr error) {
 	}
 
 	for _, config := range [][2]string{
-		{"core.hooksPath", w.repo.HooksDir},
-		{"core.attributesFile", w.repo.AttributesPath},
 		{"core.autocrlf", "false"},
 		{"commit.gpgSign", "false"},
 	} {
@@ -317,8 +315,6 @@ func (w *Workspace) validateInitializedHistory(ctx context.Context) error {
 		return fmt.Errorf("validate frigo private attributes: %w", err)
 	}
 	for _, config := range [][2]string{
-		{"core.hooksPath", w.repo.HooksDir},
-		{"core.attributesFile", w.repo.AttributesPath},
 		{"core.autocrlf", "false"},
 		{"commit.gpgSign", "false"},
 	} {
