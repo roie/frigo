@@ -229,9 +229,6 @@ func liveLinkedRegistryPaths(repo repository.Repository) ([]string, error) {
 	if ok, err := realDirectoryExists(repo.CommonFrigoDir); err != nil || !ok {
 		return nil, err
 	}
-	if ok, err := realDirectoryExists(repo.LinkedStoresDir); err != nil || !ok {
-		return nil, err
-	}
 	entries, err := os.ReadDir(adminRoot)
 	if err != nil {
 		return nil, fmt.Errorf("scan active Git worktree administration: %w", err)
@@ -262,34 +259,82 @@ func liveLinkedRegistryPaths(repo repository.Repository) ([]string, error) {
 		}
 
 		pointerPath := filepath.Join(admin, "frigo-id")
-		if exists, _ := regularFileExists(pointerPath); !exists {
+		_, statErr := os.Lstat(pointerPath)
+		if os.IsNotExist(statErr) {
+			claimedStore, err := storeClaimingCheckout(repo.LinkedStoresDir, checkoutRoot)
+			if err != nil {
+				return nil, err
+			}
+			if claimedStore != "" && !(repo.LinkedWorktree && filepath.Clean(repo.Root) == checkoutRoot && filepath.Dir(filepath.Clean(repo.RegistryPath)) == claimedStore) {
+				return nil, fmt.Errorf("live worktree %s has a missing frigo pointer; run frigo doctor --repair there", checkoutRoot)
+			}
 			continue
+		}
+		if statErr != nil {
+			return nil, fmt.Errorf("inspect frigo pointer %s: %w", pointerPath, statErr)
+		}
+		if exists, err := regularFileExists(pointerPath); err != nil || !exists {
+			return nil, fmt.Errorf("invalid frigo pointer %s", pointerPath)
 		}
 		id, err := metadata.LoadPointer(pointerPath)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("load frigo pointer %s: %w", pointerPath, err)
 		}
 		store := filepath.Join(repo.LinkedStoresDir, id)
-		if ok, _ := realDirectoryExists(store); !ok {
-			continue
+		if ok, err := realDirectoryExists(store); err != nil || !ok {
+			return nil, fmt.Errorf("missing or invalid linked frigo store %s", store)
 		}
 		manifestPath := filepath.Join(store, "manifest.json")
-		if exists, _ := regularFileExists(manifestPath); !exists {
-			continue
+		if exists, err := regularFileExists(manifestPath); err != nil || !exists {
+			return nil, fmt.Errorf("missing or invalid linked frigo manifest %s", manifestPath)
 		}
 		manifest, err := metadata.Load(manifestPath)
 		// A stale manifest worktreePath means the checkout moved; its owned paths
 		// must stay excluded until the association is resolved.
 		if err != nil || manifest.ID != id {
-			continue
+			return nil, fmt.Errorf("invalid linked frigo manifest %s", manifestPath)
 		}
 		registryPath := filepath.Join(store, "registry.json")
-		if exists, _ := regularFileExists(registryPath); !exists {
-			continue
+		if exists, err := regularFileExists(registryPath); err != nil {
+			return nil, fmt.Errorf("inspect linked frigo registry %s: %w", registryPath, err)
+		} else if !exists {
+			if _, err := os.Lstat(registryPath); os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("invalid linked frigo registry %s", registryPath)
 		}
 		paths = append(paths, registryPath)
 	}
 	return paths, nil
+}
+
+func storeClaimingCheckout(storesDir, checkoutRoot string) (string, error) {
+	if ok, err := realDirectoryExists(storesDir); err != nil || !ok {
+		return "", err
+	}
+	entries, err := os.ReadDir(storesDir)
+	if err != nil {
+		return "", fmt.Errorf("scan linked frigo stores: %w", err)
+	}
+	var claimed string
+	for _, entry := range entries {
+		store := filepath.Join(storesDir, entry.Name())
+		if ok, _ := realDirectoryExists(store); !ok {
+			continue
+		}
+		manifestPath := filepath.Join(store, "manifest.json")
+		if ok, _ := regularFileExists(manifestPath); !ok {
+			continue
+		}
+		manifest, err := metadata.Load(manifestPath)
+		if err == nil && manifest.ID == entry.Name() && filepath.Clean(manifest.WorktreePath) == checkoutRoot {
+			if claimed != "" {
+				return "", fmt.Errorf("multiple linked frigo stores claim worktree %s", checkoutRoot)
+			}
+			claimed = store
+		}
+	}
+	return claimed, nil
 }
 
 func realDirectoryExists(filename string) (bool, error) {
