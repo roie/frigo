@@ -70,7 +70,7 @@ func (w *Workspace) commitLocked(ctx context.Context, options CommitOptions) (Co
 			}
 		}
 
-		if err := w.validateIndexUTF8Paths(ctx, client); err != nil {
+		if err := w.validateCommitIndex(ctx, client); err != nil {
 			return err
 		}
 

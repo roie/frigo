@@ -60,16 +60,24 @@ func (w *Workspace) withTemporaryIndexAt(ctx context.Context, base historyBase, 
 	return fn(client)
 }
 
-// Check the actual staged tree, including inherited entries and files created
-// after preflight. A filesystem scan alone cannot protect newly saved history.
-func (w *Workspace) validateIndexUTF8Paths(ctx context.Context, client git.Client) error {
-	paths, err := w.privateOutputBytes(ctx, client, "ls-files", "--cached", "-z")
+func (w *Workspace) validateCommitIndex(ctx context.Context, client git.Client) error {
+	entries, err := w.privateOutputBytes(ctx, client, "ls-files", "--stage", "-z")
 	if err != nil {
 		return fmt.Errorf("inspect staged frigo paths: %w", err)
 	}
-	for path := range bytes.SplitSeq(paths, []byte{0}) {
+	for entry := range bytes.SplitSeq(entries, []byte{0}) {
+		if len(entry) == 0 {
+			continue
+		}
+		header, path, ok := bytes.Cut(entry, []byte{'\t'})
+		if !ok {
+			return fmt.Errorf("invalid staged frigo entry %q", entry)
+		}
 		if !utf8.Valid(path) {
 			return fmt.Errorf("%q is not a valid UTF-8 path", path)
+		}
+		if bytes.HasPrefix(header, []byte("160000 ")) {
+			return fmt.Errorf("cannot save %q: nested Git repository contents are not stored by frigo", path)
 		}
 	}
 	return nil
