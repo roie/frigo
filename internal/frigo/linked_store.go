@@ -192,7 +192,7 @@ func (w *Workspace) selectLinkedStore(id string) error {
 		return fmt.Errorf("linked frigo pointer ID %s disagrees with manifest ID %s", id, manifest.ID)
 	}
 	if manifest.WorktreePath != w.repo.Root {
-		return fmt.Errorf("linked frigo manifest worktree path %q disagrees with current worktree %q", manifest.WorktreePath, w.repo.Root)
+		return fmt.Errorf("linked frigo manifest worktree path %q disagrees with current worktree %q; if this worktree moved, run git worktree repair, then frigo doctor --repair", manifest.WorktreePath, w.repo.Root)
 	}
 	w.repo = w.repo.WithFrigoDir(store)
 	return nil
@@ -278,8 +278,6 @@ func (w *Workspace) initializeHistory(ctx context.Context) (outErr error) {
 	}
 
 	for _, config := range [][2]string{
-		{"core.hooksPath", w.repo.HooksDir},
-		{"core.attributesFile", w.repo.AttributesPath},
 		{"core.autocrlf", "false"},
 		{"commit.gpgSign", "false"},
 	} {
@@ -317,8 +315,6 @@ func (w *Workspace) validateInitializedHistory(ctx context.Context) error {
 		return fmt.Errorf("validate frigo private attributes: %w", err)
 	}
 	for _, config := range [][2]string{
-		{"core.hooksPath", w.repo.HooksDir},
-		{"core.attributesFile", w.repo.AttributesPath},
 		{"core.autocrlf", "false"},
 		{"commit.gpgSign", "false"},
 	} {

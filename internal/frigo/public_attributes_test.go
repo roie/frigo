@@ -207,7 +207,7 @@ func TestCommitAbortsWhenStagedPathInspectionFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	failing := NewWorkspace(ws.repo, failingGitClient(t, ws.repo.HistoryDir, "ls-files", "--cached"), root)
+	failing := NewWorkspace(ws.repo, failingGitClient(t, ws.repo.HistoryDir, "ls-files", "--stage"), root)
 	result, err := failing.Commit(context.Background(), CommitOptions{All: true, Message: "reject"})
 	if err == nil || !strings.Contains(err.Error(), "inspect staged frigo paths") || result.Committed {
 		t.Fatalf("Commit() = %#v, %v", result, err)

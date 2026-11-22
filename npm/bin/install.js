@@ -418,6 +418,18 @@ async function releaseOwnedLock(lockPath, owner) {
 	}
 }
 
+function releaseOwnedLockSync(lockPath, owner) {
+	try {
+		if (fs.readFileSync(lockPath, "utf8") === owner) {
+			fs.rmSync(lockPath, { force: true });
+		}
+	} catch {
+		// Lock cleanup is best-effort and must not mask the signal.
+	}
+}
+
+const LOCK_RELEASE_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
+
 async function acquireLock(lockPath, options = {}) {
 	const maxWaitMs = options.maxWaitMs ?? LOCK_MAX_WAIT_MS;
 	const pollMs = options.pollMs ?? LOCK_POLL_MS;
@@ -430,7 +442,17 @@ async function acquireLock(lockPath, options = {}) {
 			await handle.writeFile(owner);
 			await handle.close();
 			handle = undefined;
-			return () => releaseOwnedLock(lockPath, owner);
+			// An interrupted first-run download must not leave a lock that blocks
+			// every later launch; release it, then let the signal end the process.
+			const onSignal = (signal) => {
+				releaseOwnedLockSync(lockPath, owner);
+				process.kill(process.pid, signal);
+			};
+			for (const signal of LOCK_RELEASE_SIGNALS) process.once(signal, onSignal);
+			return () => {
+				for (const signal of LOCK_RELEASE_SIGNALS) process.off(signal, onSignal);
+				return releaseOwnedLock(lockPath, owner);
+			};
 		} catch (error) {
 			if (handle) {
 				await handle.close().catch(() => {});

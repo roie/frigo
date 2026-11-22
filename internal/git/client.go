@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -22,10 +21,6 @@ func (c Client) executable() string {
 		return "git"
 	}
 	return c.Path
-}
-
-func (c Client) command(ctx context.Context, dir string, args ...string) *exec.Cmd {
-	return c.commandWithLiteralPathspecs(ctx, dir, true, args...)
 }
 
 func (c Client) commandWithLiteralPathspecs(ctx context.Context, dir string, literal bool, args ...string) *exec.Cmd {
@@ -126,18 +121,6 @@ func (c Client) outputBytesWithInput(ctx context.Context, dir string, input []by
 	return bytes.Clone(stdout.Bytes()), nil
 }
 
-// Run runs Git with caller-provided streams.
-func (c Client) Run(ctx context.Context, dir string, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
-	cmd := c.command(ctx, dir, args...)
-	cmd.Stdin = stdin
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	if err := cmd.Run(); err != nil {
-		return newCommandError(args, "", err)
-	}
-	return nil
-}
-
 // CommandError describes a Git process that could not be started or exited unsuccessfully.
 type CommandError struct {
 	Args     []string
@@ -160,8 +143,7 @@ func (e *CommandError) Unwrap() error { return e.Err }
 
 func newCommandError(args []string, stderr string, err error) *CommandError {
 	exitCode := -1
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		exitCode = exitErr.ExitCode()
 	}
 	return &CommandError{
@@ -174,8 +156,8 @@ func newCommandError(args []string, stderr string, err error) *CommandError {
 
 // ExitCode extracts an exit status from an error returned by Client.
 func ExitCode(err error) (int, bool) {
-	var commandErr *CommandError
-	if !errors.As(err, &commandErr) || commandErr.ExitCode < 0 {
+	commandErr, ok := errors.AsType[*CommandError](err)
+	if !ok || commandErr.ExitCode < 0 {
 		return 0, false
 	}
 	return commandErr.ExitCode, true

@@ -640,8 +640,6 @@ func TestLinkedStoreRecoversEveryDurableBoundary(t *testing.T) {
 		"linked-store-hooks",
 		"linked-store-attributes",
 		"linked-store-private-attributes",
-		"linked-store-config-core.hooksPath",
-		"linked-store-config-core.attributesFile",
 		"linked-store-config-core.autocrlf",
 		"linked-store-config-commit.gpgSign",
 		"linked-store-history-validation",
@@ -722,10 +720,9 @@ func TestLinkedStoreRecoversEveryDurableBoundary(t *testing.T) {
 					if readErr != nil || string(contents) != privateAttributes {
 						t.Fatalf("private attributes callback ran before durable write: %q, %v", contents, readErr)
 					}
-				case "linked-store-config-core.hooksPath", "linked-store-config-core.attributesFile", "linked-store-config-core.autocrlf", "linked-store-config-commit.gpgSign":
+				case "linked-store-config-core.autocrlf", "linked-store-config-commit.gpgSign":
 					key := strings.TrimPrefix(got, "linked-store-config-")
 					want := map[string]string{
-						"core.hooksPath": ws.repo.HooksDir, "core.attributesFile": ws.repo.AttributesPath,
 						"core.autocrlf": "false", "commit.gpgSign": "false",
 					}[key]
 					if value := testrepo.Output(t, ws.repo.Root, "--git-dir="+ws.repo.HistoryDir, "config", "--get", key); value != want {
@@ -848,16 +845,15 @@ func assertValidLinkedStore(t *testing.T, ws *Workspace) {
 		t.Fatalf("bare state = %q, want true", got)
 	}
 	configs := map[string]string{
-		"core.hooksPath":      filepath.Join(store, "hooks"),
-		"core.attributesFile": filepath.Join(store, "attributes"),
-		"core.autocrlf":       "false",
-		"commit.gpgSign":      "false",
+		"core.autocrlf":  "false",
+		"commit.gpgSign": "false",
 	}
 	for key, want := range configs {
 		if got := testrepo.Output(t, ws.repo.Root, "--git-dir="+filepath.Join(store, "history.git"), "config", "--get", key); got != want {
 			t.Fatalf("config %s = %q, want %q", key, got, want)
 		}
 	}
+	assertNoPersistedHistoryPaths(t, ws)
 	history := filepath.Join(store, "history.git")
 	if err := rejectSymlinksUnder(history); err != nil {
 		t.Fatalf("history validation failed: %v", err)

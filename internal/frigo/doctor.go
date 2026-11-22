@@ -41,7 +41,6 @@ type DoctorAction struct {
 	Description string
 }
 
-// DoctorResult contains the final diagnosis and any repair plan and actions.
 type DoctorResult struct {
 	Issues  []DoctorIssue
 	Planned []DoctorAction
@@ -68,6 +67,7 @@ type doctorState struct {
 	hasRegistry     bool
 	stores          []doctorStore
 	pointerEvidence map[string][]doctorPointerEvidence
+	actionRepos     map[string]repository.Repository
 	issues          []DoctorIssue
 }
 
@@ -78,8 +78,7 @@ func (w *Workspace) Doctor(ctx context.Context, options DoctorOptions) (DoctorRe
 }
 
 // DoctorWithPlan is Doctor with a callback invoked with the complete sorted
-// plan while the common lock is held and before the first mutation. The CLI
-// uses the callback to guarantee that users see the complete plan first.
+// plan while the common lock is held and before the first mutation.
 func (w *Workspace) DoctorWithPlan(ctx context.Context, options DoctorOptions, beforeApply func([]DoctorAction) error) (result DoctorResult, err error) {
 	operationLock, acquireErr := lockfile.Acquire(ctx, w.repo.OperationLockPath, "doctor", w.lockWait)
 	if acquireErr != nil {
@@ -142,7 +141,7 @@ func (w *Workspace) rerunDoctorDiagnosisLocked(ctx context.Context) ([]DoctorIss
 }
 
 func (w *Workspace) diagnoseDoctorLocked(ctx context.Context) doctorState {
-	state := doctorState{repo: w.repo}
+	state := doctorState{repo: w.repo, actionRepos: make(map[string]repository.Repository)}
 	w.inspectUnsupportedLinkedState(&state)
 
 	state.stores = w.inspectDoctorStores(&state)
@@ -457,7 +456,7 @@ func (state *doctorState) selectLinkedDoctorStore() {
 			return
 		}
 		if store.manifest.WorktreePath != state.repo.Root {
-			state.add("association-worktree-mismatch", filepath.Join(store.path, manifestName), "manifest worktreePath does not match the current worktree", false)
+			state.add("association-worktree-mismatch", filepath.Join(store.path, manifestName), "manifest worktreePath does not match the current worktree", state.movedWorktreeProven(*store))
 			return
 		}
 		state.selected = store
@@ -482,6 +481,16 @@ func (state *doctorState) hasRepairableAction(action DoctorAction) bool {
 		}
 	}
 	return false
+}
+
+func (state *doctorState) movedWorktreeProven(store doctorStore) bool {
+	evidence := state.pointerEvidence[store.id]
+	return store.valid &&
+		len(evidence) == 1 &&
+		evidence[0].live &&
+		evidence[0].checkoutRoot == state.repo.Root &&
+		filepath.Clean(evidence[0].path) == filepath.Clean(state.repo.WorktreeIDPath) &&
+		len(state.storesForRoot(state.repo.Root)) == 0
 }
 
 func (state *doctorState) storesForRoot(root string) []doctorStore {
@@ -585,8 +594,6 @@ func (state *doctorState) validHistory(ctx context.Context, w *Workspace) bool {
 		return false
 	}
 	for _, config := range [][2]string{
-		{"core.hooksPath", state.repo.HooksDir},
-		{"core.attributesFile", state.repo.AttributesPath},
 		{"core.autocrlf", "false"},
 		{"commit.gpgSign", "false"},
 	} {
@@ -680,6 +687,11 @@ func (state *doctorState) add(code, path, message string, repairable bool) {
 			return
 		}
 	}
+	if repairable {
+		if _, exists := state.actionRepos[path]; !exists {
+			state.actionRepos[path] = state.repo
+		}
+	}
 	state.issues = append(state.issues, DoctorIssue{Code: code, Path: path, Message: message, Repairable: repairable})
 }
 
@@ -707,21 +719,22 @@ func buildDoctorPlan(issues []DoctorIssue) []DoctorAction {
 
 	actions := make([]DoctorAction, 0, len(issues))
 	for _, issue := range issues {
-		if associationBlocked && strings.HasPrefix(issue.Code, "association-pointer-") {
+		if associationBlocked && (strings.HasPrefix(issue.Code, "association-pointer-") || issue.Code == "association-worktree-mismatch") {
 			continue
 		}
 		if !issue.Repairable {
 			continue
 		}
 		description := map[string]string{
-			"association-pointer-missing":  "write the unambiguous stable-store pointer",
-			"association-pointer-mismatch": "replace the pointer with the unambiguous stable-store ID",
-			"attributes-private":           "restore exact private attributes",
-			"attributes-public":            "restore exact public attributes",
-			"exclusions-stale":             "synchronize managed Git exclusions",
-			"lifecycle-lock-missing":       "restore the recorded owned lifecycle lock",
-			"lifecycle-lock-stale":         "clear stale exact lifecycle lock ownership",
-			"lifecycle-lock-unowned":       "record ownership of the exact Frigo lifecycle lock",
+			"association-pointer-missing":   "write the unambiguous stable-store pointer",
+			"association-pointer-mismatch":  "replace the pointer with the unambiguous stable-store ID",
+			"association-worktree-mismatch": "record the moved worktree path in the manifest",
+			"attributes-private":            "restore exact private attributes",
+			"attributes-public":             "restore exact public attributes",
+			"exclusions-stale":              "synchronize managed Git exclusions",
+			"lifecycle-lock-missing":        "restore the recorded owned lifecycle lock",
+			"lifecycle-lock-stale":          "clear stale exact lifecycle lock ownership",
+			"lifecycle-lock-unowned":        "record ownership of the exact Frigo lifecycle lock",
 		}[issue.Code]
 		if description == "" {
 			continue
@@ -734,7 +747,7 @@ func buildDoctorPlan(issues []DoctorIssue) []DoctorAction {
 			return 0
 		case code == "exclusions-stale":
 			return 1
-		case strings.HasPrefix(code, "association-pointer-"):
+		case strings.HasPrefix(code, "association-pointer-"), code == "association-worktree-mismatch":
 			return 2
 		default:
 			return 3
@@ -763,6 +776,15 @@ func (w *Workspace) applyDoctorAction(ctx context.Context, action DoctorAction) 
 	state := w.diagnoseDoctorLocked(ctx)
 	if !state.hasRepairableAction(action) {
 		return false, nil
+	}
+	if repo, ok := state.actionRepos[action.Path]; ok && repo != state.repo {
+		target := *w
+		target.repo = repo
+		w = &target
+		state = w.diagnoseDoctorLocked(ctx)
+		if !state.hasRepairableAction(action) {
+			return false, nil
+		}
 	}
 	if w.doctorActionHook != nil {
 		if err := w.doctorActionHook(action.Code); err != nil {
@@ -793,6 +815,30 @@ func (w *Workspace) applyDoctorAction(ctx context.Context, action DoctorAction) 
 			return false, nil
 		}
 		if err := metadata.SavePointer(w.repo.WorktreeIDPath, matches[0].id); err != nil {
+			return false, err
+		}
+		return true, nil
+	case "association-worktree-mismatch":
+		pointerID, ok := loadDoctorPointer(w.repo.WorktreeIDPath)
+		if !ok {
+			return false, fmt.Errorf("current pointer is not readable")
+		}
+		var store *doctorStore
+		for i := range state.stores {
+			if state.stores[i].id == pointerID {
+				store = &state.stores[i]
+			}
+		}
+		manifestPath := ""
+		if store != nil {
+			manifestPath = filepath.Join(store.path, manifestName)
+		}
+		if store == nil || filepath.Clean(action.Path) != filepath.Clean(manifestPath) || !state.movedWorktreeProven(*store) {
+			return false, fmt.Errorf("moved worktree association is no longer unambiguous")
+		}
+		manifest := store.manifest
+		manifest.WorktreePath = w.repo.Root
+		if err := metadata.Save(manifestPath, manifest); err != nil {
 			return false, err
 		}
 		return true, nil

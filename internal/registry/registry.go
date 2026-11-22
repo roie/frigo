@@ -95,7 +95,7 @@ func (r *Registry) Add(paths ...string) (AddResult, error) {
 		return AddResult{}, fmt.Errorf("invalid add paths: %w", err)
 	}
 
-	next := Registry{Version: r.Version, Paths: append([]string(nil), r.Paths...)}
+	next := *r
 	if next.Version == 0 {
 		next.Version = CurrentVersion
 	}
@@ -134,7 +134,7 @@ func (r *Registry) Release(paths ...string) (ReleaseResult, error) {
 		return ReleaseResult{}, fmt.Errorf("invalid release paths: %w", err)
 	}
 
-	next := Registry{Version: r.Version, Paths: append([]string(nil), r.Paths...)}
+	next := *r
 	if err := next.validate(); err != nil {
 		return ReleaseResult{}, err
 	}

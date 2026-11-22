@@ -89,7 +89,7 @@ func TestSyncNonemptyThenEmptyRestoresExactOutsideBytes(t *testing.T) {
 	}
 }
 
-func TestSyncUsesLivePointersAndExactAssociationAgreement(t *testing.T) {
+func TestSyncUsesLivePointersAndKeepsMovedWorktreePaths(t *testing.T) {
 	root := testrepo.Init(t)
 	testrepo.Write(t, root, "README.md", "main\n")
 	testrepo.CommitAll(t, root, "initial", "README.md")
@@ -145,10 +145,10 @@ func TestSyncUsesLivePointersAndExactAssociationAgreement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(contents), "# >>> frigo >>>\n/current.txt\n/main.txt\n/other.txt\n# <<< frigo <<<\n"; got != want {
+	if got, want := string(contents), "# >>> frigo >>>\n/current.txt\n/main.txt\n/mismatch.txt\n/other.txt\n# <<< frigo <<<\n"; got != want {
 		t.Fatalf("exclude = %q, want %q", got, want)
 	}
-	for _, excluded := range []string{"stale-current.txt", "stale.txt", "mismatch.txt", "legacy.txt", "orphan.txt"} {
+	for _, excluded := range []string{"stale-current.txt", "stale.txt", "legacy.txt", "orphan.txt"} {
 		if strings.Contains(string(contents), "/"+excluded) {
 			t.Fatalf("exclude used unagreed association path %q: %q", excluded, contents)
 		}
@@ -180,15 +180,8 @@ func TestSyncUsesLivePointersWithoutFollowingSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Sync(mainRepo, registry.New()); err != nil {
-		t.Fatal(err)
-	}
-	contents, err := os.ReadFile(mainRepo.ExcludePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(contents), "symlinked.txt") {
-		t.Fatalf("exclude followed symlinked association: %q", contents)
+	if err := Sync(mainRepo, registry.New()); err == nil {
+		t.Fatal("Sync accepted symlinked pointer")
 	}
 }
 
@@ -306,4 +299,33 @@ func discoverRepository(t *testing.T, root string) repository.Repository {
 		t.Fatal(err)
 	}
 	return repo
+}
+
+func TestSyncRefusesMissingLivePointer(t *testing.T) {
+	root := testrepo.Init(t)
+	testrepo.Write(t, root, "README.md", "main\n")
+	testrepo.CommitAll(t, root, "initial", "README.md")
+	mainRepo := discoverRepository(t, root)
+	linkedRoot := addLinkedWorktree(t, root, "linked", "linked-branch")
+	linkedRepo := associateLinkedRegistry(t, discoverRepository(t, linkedRoot), strings.Repeat("a", 32), "secret.txt")
+	if err := Sync(mainRepo, registry.New()); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(mainRepo.ExcludePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(linkedRepo.WorktreeIDPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := Sync(mainRepo, registry.Registry{Version: registry.CurrentVersion, Paths: []string{"other.txt"}}); err == nil {
+		t.Fatal("Sync accepted missing live pointer")
+	}
+	after, err := os.ReadFile(mainRepo.ExcludePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("exclude changed: %q -> %q", before, after)
+	}
 }

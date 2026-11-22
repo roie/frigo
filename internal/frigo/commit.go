@@ -70,13 +70,12 @@ func (w *Workspace) commitLocked(ctx context.Context, options CommitOptions) (Co
 			}
 		}
 
-		if err := w.validateIndexUTF8Paths(ctx, client); err != nil {
+		if err := w.validateCommitIndex(ctx, client); err != nil {
 			return err
 		}
 
 		_, diffErr := w.privateOutput(ctx, client, "diff", "--cached", "--quiet", "--exit-code")
 		if diffErr == nil {
-			result = CommitResult{Committed: false}
 			return nil
 		}
 		if code, ok := git.ExitCode(diffErr); !ok || code != 1 {
@@ -109,8 +108,7 @@ func (w *Workspace) commitLocked(ctx context.Context, options CommitOptions) (Co
 		return CommitResult{}, err
 	}
 	if result.Committed {
-		expected := base.OID
-		if _, err := w.privateOutput(ctx, w.git, "update-ref", "HEAD", commit, expected); err != nil {
+		if _, err := w.privateOutput(ctx, w.git, "update-ref", "HEAD", commit, base.OID); err != nil {
 			current, inspectErr := w.resolveHistoryBase(ctx)
 			if inspectErr == nil && current != base {
 				return CommitResult{}, fmt.Errorf("frigo history changed concurrently; retry the commit: %w", err)

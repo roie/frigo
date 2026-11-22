@@ -536,6 +536,24 @@ Frigo-owned lifecycle locks are a practical boundary, not a security boundary.
 - ordinary `git worktree remove` is blocked when Git considers the worktree unsafe to remove;
 - `git worktree remove --force` still respects Frigo's owned lifecycle lock;
 - `git worktree remove --force --force` can remove a locked worktree, so the shared history remains the recovery point.
+- `git worktree unlock` removes the protection. Git treats frigo-managed files as ignored, so a later plain `git worktree remove` deletes them, including uncommitted changes. `frigo doctor` reports the missing lock, and `frigo doctor --repair` restores it.
+
+### Moving a linked worktree
+
+Frigo's lifecycle lock also blocks `git worktree move`. To move a linked worktree, move its directory, then reconnect it.
+
+Do not run Frigo commands in other worktrees between the directory move and `git worktree repair`. An exclusion update during this interval can expose managed files to ordinary Git staging.
+
+```bash
+mv ../feature ../feature-moved
+cd ../feature-moved
+git worktree repair
+frigo doctor --repair
+```
+
+`frigo doctor --repair` records the new location only when Git's worktree administration and Frigo's pointer agree on it. Until Frigo records the new location, ordinary Frigo commands in the moved worktree fail. After `git worktree repair`, exclusion updates retain the moved worktree's managed paths.
+
+If the first Frigo repair reports `exclusions-stale`, run `frigo doctor --repair` again to restore the exclusions. Do not stage files with Git until doctor reports `ok`.
 
 ### frigo history is local
 
@@ -558,6 +576,21 @@ frigo protects files from ordinary main-repository staging and commit workflows.
 Repository ignore rules can conflict with frigo's local rules. frigo validates managed paths during its commands and reports detected conflicts, but later changes outside frigo can still alter the effective Git behavior. frigo only manages its own exclusion boundary.
 
 Review the main repository's staged diff before committing sensitive files.
+
+### Git cleanup commands can remove frigo files
+
+frigo hides managed files from the main repository with local ignore rules, so Git treats them as ignored files.
+
+Commands that act on ignored files act on frigo files too:
+
+- `git clean -x` or `git clean -X` deletes them;
+- `git stash --all` moves them into the stash.
+
+frigo history is stored in Git metadata, so these commands do not remove it. After `git clean`, run `frigo restore` to recover the committed version. Uncommitted changes deleted by `git clean` are lost.
+
+After `git stash --all`, use `git stash apply` to recover stashed files, including uncommitted changes. Apply the stash before `frigo restore` to avoid conflicts with restored files.
+
+Commit to frigo before you run these commands.
 
 ### UTF-8 and U+FFFD
 

@@ -1,0 +1,47 @@
+name: Git compatibility
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  git-2-23:
+    name: Git 2.23 Compatibility
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build Git 2.23.0
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libexpat1-dev libssl-dev zlib1g-dev perl
+          prefix="$RUNNER_TEMP/git-2.23.0"
+          tarball="$RUNNER_TEMP/git-2.23.0.tar.gz"
+          curl -fLsS https://mirrors.edge.kernel.org/pub/software/scm/git/git-2.23.0.tar.gz -o "$tarball"
+          tar -C "$RUNNER_TEMP" -xzf "$tarball"
+          cd "$RUNNER_TEMP/git-2.23.0"
+          make -j"$(nproc)" prefix="$prefix" NO_CURL=YesPlease NO_GETTEXT=YesPlease NO_TCLTK=YesPlease install
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+
+      - name: Verify Git 2.23.0
+        run: test "$(git --version)" = "git version 2.23.0"
+
+      - name: Run Git 2.23 compatibility tests
+        env:
+          GOFLAGS: -mod=readonly
+        run: go test ./internal/frigo -run '^TestPrivateAttributesPreserveBytesAndDiff$|^TestCommitRejectsStaleHistoryBase$|^TestConcurrentUnbornCommit$|^TestCommitRejectsHistoryBaseDeletedConcurrently$|^TestShowReportsLatestCommitAndFullPatch$|^TestDiffPatchPreservesExactOutput$|^TestDiffPatchIncludesAdditionsAndDirectoryDeletions$|^TestStatusPorcelainEmitsSortedNULRecords$|^TestStatusPorcelainAndDiffPatchDisableFSMonitor$|^TestLogPorcelainEmitsFixedCommitRecords$|^TestShowNameStatusReturnsSortedHistoricalChanges$|^TestShowBlobPreservesExactHistoricalBytes$' -count=1

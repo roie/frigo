@@ -13,6 +13,10 @@ const ciWorkflow = fs.readFileSync(
 	path.join(workflowDirectory, "ci.yml"),
 	"utf8",
 );
+const compatibilityWorkflow = fs.readFileSync(
+	path.join(workflowDirectory, "git-compatibility.yml"),
+	"utf8",
+);
 const releaseSmokeStart = workflow.indexOf("\n  release-smoke:");
 assert.notEqual(releaseSmokeStart, -1, "release-smoke job is missing");
 const releaseSmoke = workflow.slice(releaseSmokeStart);
@@ -148,9 +152,11 @@ test("manual recovery reuses a public release without mutating it", () => {
 	const checkoutCount = (workflow.match(/uses: actions\/checkout@/g) || [])
 		.length;
 	const resolvedCheckoutCount = (
-		workflow.match(/ref: \$\{\{ inputs\.release_tag \|\| github\.ref \}\}/g) || []
+		workflow.match(/^ {10}ref: \$\{\{ inputs\.release_tag \|\| github\.ref \}\}$/gm) || []
 	).length;
 	assert.equal(resolvedCheckoutCount, checkoutCount);
+	assert.match(workflow, /uses: \.\/\.github\/workflows\/git-compatibility\.yml\n    with:\n      ref: \$\{\{ inputs\.release_tag \|\| github\.ref \}\}/);
+	assert.match(compatibilityWorkflow, /uses: actions\/checkout@[^\n]+\n        with:\n          persist-credentials: false\n          ref: \$\{\{ inputs\.ref \}\}/);
 	assert.match(workflow, /Download existing public release assets/);
 	assert.match(workflow, /Verify existing public release assets/);
 	assert.match(workflow, /gh release view "\$RELEASE_TAG" --json isDraft/);
@@ -210,11 +216,18 @@ test("CI runs release safety tests directly", () => {
 	);
 });
 
-test("release compatibility tests cover scriptable output on Git 2.23", () => {
-	const start = workflow.indexOf("- name: Run Git 2.23 compatibility tests");
+test("CI and release share scriptable output tests on Git 2.23", () => {
+	for (const source of [ciWorkflow, workflow]) {
+		assert.match(
+			source,
+			/\n  compatibility:\n(?:    needs: verify\n)?    uses: \.\/\.github\/workflows\/git-compatibility\.yml\n/,
+		);
+	}
+	assert.match(workflow, /needs: \[verify, race, compatibility\]/);
+	assert.match(compatibilityWorkflow, /test "\$\(git --version\)" = "git version 2\.23\.0"/);
+	const start = compatibilityWorkflow.indexOf("- name: Run Git 2.23 compatibility tests");
 	assert.notEqual(start, -1, "Git 2.23 compatibility step is missing");
-	const end = workflow.indexOf("\n  release:", start);
-	const compatibilityStep = workflow.slice(start, end === -1 ? undefined : end);
+	const compatibilityStep = compatibilityWorkflow.slice(start);
 	for (const testName of [
 		"TestDiffPatchPreservesExactOutput",
 		"TestDiffPatchIncludesAdditionsAndDirectoryDeletions",
