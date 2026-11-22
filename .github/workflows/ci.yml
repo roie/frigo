@@ -72,3 +72,6 @@ jobs:
           go-version-file: go.mod
           cache: false
       - run: go test -race ./...
+
+  compatibility:
+    uses: ./.github/workflows/git-compatibility.yml
