@@ -319,8 +319,8 @@ func (w *Workspace) reacquireWorktreeProtection(ctx context.Context, id, expecte
 }
 
 func worktreeLockAllowsActiveRegistryRestore(err error) bool {
-	var releaseErr *worktreeLockReleaseError
-	return errors.As(err, &releaseErr) && releaseErr.restoreActiveRegistry
+	releaseErr, ok := errors.AsType[*worktreeLockReleaseError](err)
+	return ok && releaseErr.restoreActiveRegistry
 }
 
 func (w *Workspace) lifecycleBoundary(name string) error {

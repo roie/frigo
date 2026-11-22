@@ -436,10 +436,7 @@ func rewrite(existing []byte, paths []string) ([]byte, error) {
 		out = append(out, block...)
 		return out, nil
 	}
-	// There is no byte sequence that both appends a new line-oriented section
-	// after a non-newline-terminated file and restores the prior bytes exactly
-	// when the managed section is later removed. Put the managed section first so
-	// every user byte remains outside the section unchanged.
+	// Prepend the block to preserve a user file with no trailing newline.
 	out = append(out, block...)
 	out = append(out, existing...)
 	return out, nil

@@ -195,7 +195,7 @@ func TestOutputRemovesExactlyOneTerminalLFOrCRLF(t *testing.T) {
 	}
 }
 
-func TestRunAgainstRealRepo(t *testing.T) {
+func TestOutputAgainstRealRepo(t *testing.T) {
 	root := testrepo.Init(t)
 	client := Client{Path: "git"}
 	if got, err := client.Output(context.Background(), root, "rev-parse", "--show-toplevel"); err != nil {

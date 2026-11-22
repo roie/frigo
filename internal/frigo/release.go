@@ -83,7 +83,7 @@ func (w *Workspace) releaseLocked(ctx context.Context, rawPaths []string, force 
 		return registry.ReleaseResult{}, fmt.Errorf("synchronize release test: %w", err)
 	}
 
-	original := registry.Registry{Version: owned.Version, Paths: append([]string(nil), owned.Paths...)}
+	original := owned
 	result, err := owned.Release(paths...)
 	if err != nil {
 		return registry.ReleaseResult{}, err

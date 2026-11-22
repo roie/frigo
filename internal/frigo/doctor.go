@@ -41,7 +41,6 @@ type DoctorAction struct {
 	Description string
 }
 
-// DoctorResult contains the final diagnosis and any repair plan and actions.
 type DoctorResult struct {
 	Issues  []DoctorIssue
 	Planned []DoctorAction
@@ -79,8 +78,7 @@ func (w *Workspace) Doctor(ctx context.Context, options DoctorOptions) (DoctorRe
 }
 
 // DoctorWithPlan is Doctor with a callback invoked with the complete sorted
-// plan while the common lock is held and before the first mutation. The CLI
-// uses the callback to guarantee that users see the complete plan first.
+// plan while the common lock is held and before the first mutation.
 func (w *Workspace) DoctorWithPlan(ctx context.Context, options DoctorOptions, beforeApply func([]DoctorAction) error) (result DoctorResult, err error) {
 	operationLock, acquireErr := lockfile.Acquire(ctx, w.repo.OperationLockPath, "doctor", w.lockWait)
 	if acquireErr != nil {

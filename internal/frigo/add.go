@@ -53,7 +53,7 @@ func (w *Workspace) addLocked(ctx context.Context, rawPaths []string) (out regis
 	if err := testsync.Point(ctx, "add-loaded"); err != nil {
 		return registry.AddResult{}, fmt.Errorf("synchronize add test: %w", err)
 	}
-	original := registry.Registry{Version: owned.Version, Paths: append([]string(nil), owned.Paths...)}
+	original := owned
 	result, err := owned.Add(paths...)
 	if err != nil {
 		return registry.AddResult{}, err
