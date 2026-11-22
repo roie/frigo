@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,6 +12,56 @@ import (
 	"github.com/roie/frigo/internal/repository"
 	"github.com/roie/frigo/internal/testrepo"
 )
+
+func TestSiblingAddPreservesExclusionsWithWrongValidPointer(t *testing.T) {
+	ctx := t.Context()
+	linked, mainRoot, linkedRoot := newLinkedWorkspace(t)
+	testrepo.Write(t, linkedRoot, "first-notes.md", "private\n")
+	if _, err := linked.Add(ctx, []string{"first-notes.md"}); err != nil {
+		t.Fatal(err)
+	}
+
+	otherRoot := filepath.Join(t.TempDir(), "other")
+	testrepo.Run(t, mainRoot, "worktree", "add", "-q", "-b", "other-branch", otherRoot)
+	client := gitpkg.Client{Path: "git"}
+	otherRepo, err := repository.Discover(ctx, client, otherRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testrepo.Write(t, otherRoot, "other-notes.md", "private\n")
+	if _, err := NewWorkspace(otherRepo, client, otherRoot).Add(ctx, []string{"other-notes.md"}); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := os.ReadFile(linked.repo.ExcludePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pointer, err := os.ReadFile(otherRepo.WorktreeIDPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(linked.repo.WorktreeIDPath, pointer, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	mainRepo, err := repository.Discover(ctx, client, mainRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testrepo.Write(t, mainRoot, "main-notes.md", "private\n")
+	_, addErr := NewWorkspace(mainRepo, client, mainRoot).Add(ctx, []string{"main-notes.md"})
+	if got := testrepo.Output(t, linkedRoot, "status", "--porcelain", "--untracked-files=all"); got != "" {
+		t.Fatalf("managed file became visible to Git after sibling add: %q (add error: %v)", got, addErr)
+	}
+	after, err := os.ReadFile(mainRepo.ExcludePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if addErr == nil || !bytes.Equal(before, after) {
+		t.Fatalf("sibling add error = %v; exclusions before = %q, after = %q", addErr, before, after)
+	}
+}
 
 func TestSiblingOperationsPreserveExclusionsWithDamagedPointer(t *testing.T) {
 	for _, damage := range []string{"missing", "malformed"} {

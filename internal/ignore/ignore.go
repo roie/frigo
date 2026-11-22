@@ -235,6 +235,7 @@ func liveLinkedRegistryPaths(repo repository.Repository) ([]string, error) {
 	}
 
 	var paths []string
+	livePointers := make(map[string]string)
 	for _, entry := range entries {
 		admin := filepath.Join(adminRoot, entry.Name())
 		if ok, _ := realDirectoryExists(admin); !ok {
@@ -280,6 +281,10 @@ func liveLinkedRegistryPaths(repo repository.Repository) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("load frigo pointer %s: %w", pointerPath, err)
 		}
+		if other, duplicate := livePointers[id]; duplicate {
+			return nil, fmt.Errorf("live worktrees %s and %s point to the same frigo store %s", other, checkoutRoot, id)
+		}
+		livePointers[id] = checkoutRoot
 		store := filepath.Join(repo.LinkedStoresDir, id)
 		if ok, err := realDirectoryExists(store); err != nil || !ok {
 			return nil, fmt.Errorf("missing or invalid linked frigo store %s", store)
@@ -289,10 +294,17 @@ func liveLinkedRegistryPaths(repo repository.Repository) ([]string, error) {
 			return nil, fmt.Errorf("missing or invalid linked frigo manifest %s", manifestPath)
 		}
 		manifest, err := metadata.Load(manifestPath)
-		// A stale manifest worktreePath means the checkout moved; its owned paths
-		// must stay excluded until the association is resolved.
 		if err != nil || manifest.ID != id {
 			return nil, fmt.Errorf("invalid linked frigo manifest %s", manifestPath)
+		}
+		if filepath.Clean(manifest.WorktreePath) != checkoutRoot {
+			claimedStore, err := storeClaimingCheckout(repo.LinkedStoresDir, checkoutRoot)
+			if err != nil {
+				return nil, err
+			}
+			if claimedStore != "" {
+				return nil, fmt.Errorf("live worktree %s points to %s but is claimed by frigo store %s", checkoutRoot, store, claimedStore)
+			}
 		}
 		registryPath := filepath.Join(store, "registry.json")
 		if exists, err := regularFileExists(registryPath); err != nil {
